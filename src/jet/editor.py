@@ -113,12 +113,19 @@ class JsonEditor(Widget, can_focus=True):
     @staticmethod
     def _char_width(ch: str) -> int:
         """Return display width of a character (2 for fullwidth/wide)."""
+        if ch < "\u0100":
+            return 1
         return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
     def _make_segments(self, line: str, avail: int) -> list[tuple[int, int]]:
         """Break *line* into segments fitting within *avail* display columns."""
         if not line:
             return [(0, 0)]
+        if line.isascii():
+            return [
+                (s, min(s + avail, len(line)))
+                for s in range(0, len(line), avail)
+            ]
         segs: list[tuple[int, int]] = []
         seg_start = 0
         w = 0
@@ -137,6 +144,8 @@ class JsonEditor(Widget, can_focus=True):
         """Return the number of display rows a line occupies when wrapped."""
         if not line:
             return 1
+        if line.isascii():
+            return -(-len(line) // avail)
         rows = 1
         w = 0
         for ch in line:
@@ -204,25 +213,21 @@ class JsonEditor(Widget, can_focus=True):
     def _visible_height(self) -> int:
         return max(1, self.content_region.height - 2)
 
-    def _ensure_cursor_visible(self) -> None:
-        width = self.content_region.width
-        _ln_w, _rec_w, prefix_w = self._gutter_widths()
-        avail = max(1, width - prefix_w)
+    def _ensure_cursor_visible(self, avail: int) -> None:
         vh = self._visible_height()
 
         if self.cursor_row < self._scroll_top:
             self._scroll_top = self.cursor_row
 
-        while self._scroll_top <= self.cursor_row:
-            rows_before = sum(
-                self._wrap_rows(self.lines[i], avail)
-                for i in range(self._scroll_top, self.cursor_row)
-            )
-            cursor_dy = self._cursor_wrap_dy(
-                self.lines[self.cursor_row], self.cursor_col, avail
-            )
-            if rows_before + cursor_dy < vh:
-                break
+        rows_before = sum(
+            self._wrap_rows(self.lines[i], avail)
+            for i in range(self._scroll_top, self.cursor_row)
+        )
+        cursor_dy = self._cursor_wrap_dy(
+            self.lines[self.cursor_row], self.cursor_col, avail
+        )
+        while rows_before + cursor_dy >= vh and self._scroll_top <= self.cursor_row:
+            rows_before -= self._wrap_rows(self.lines[self._scroll_top], avail)
             self._scroll_top += 1
 
     # -- Public API --------------------------------------------------------
@@ -253,7 +258,7 @@ class JsonEditor(Widget, can_focus=True):
         avail = max(1, width - prefix_w)
         jsonl_records = self._jsonl_line_records() if self.jsonl else None
 
-        self._ensure_cursor_visible()
+        self._ensure_cursor_visible(avail)
 
         result = Text()
         rows_used = 0
@@ -272,6 +277,9 @@ class JsonEditor(Widget, can_focus=True):
                 if last_w + 1 > avail:
                     segs.append((len(line), len(line)))
 
+            # Pre-compute styles once per line
+            line_styles = self._compute_line_styles(line)
+
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
                     break
@@ -288,14 +296,19 @@ class JsonEditor(Widget, can_focus=True):
                             result.append(" " * (rec_width + 1))
                 else:
                     result.append(" " * prefix_w)
-                # Render segment with syntax highlighting
-                for col in range(s_start, s_end):
-                    ch = line[col]
-                    style = self._json_style_for(line, col)
+                # Render segment — batch consecutive chars with same style
+                col = s_start
+                while col < s_end:
                     if is_cursor and col == self.cursor_col:
-                        result.append(ch, style=f"reverse {style}")
-                    else:
-                        result.append(ch, style=style)
+                        result.append(line[col], style=f"reverse {line_styles[col]}")
+                        col += 1
+                        continue
+                    sty = line_styles[col]
+                    end = col + 1
+                    while end < s_end and line_styles[end] == sty and not (is_cursor and end == self.cursor_col):
+                        end += 1
+                    result.append(line[col:end], style=sty)
+                    col = end
                 # Cursor block at end of line (insert mode)
                 if is_cursor and self.cursor_col >= len(line) and si == len(segs) - 1:
                     result.append(" ", style="reverse")
@@ -341,45 +354,59 @@ class JsonEditor(Widget, can_focus=True):
 
     # -- Syntax colouring helpers ------------------------------------------
 
-    _BRACKET = set("{}[]")
-    _PUNCT = set(":,")
-    _DIGIT = set("0123456789.-+eE")
+    _BRACKET = frozenset("{}[]")
+    _PUNCT = frozenset(":,")
+    _DIGIT = frozenset("0123456789.-+eE")
 
-    def _json_style_for(self, line: str, col: int) -> str:
-        ch = line[col]
-        if ch in self._BRACKET:
-            return "bold white"
-        if ch in self._PUNCT:
-            return "white"
+    def _compute_line_styles(self, line: str) -> list[str]:
+        """Compute syntax highlight styles for every character in *line*."""
+        n = len(line)
+        if n == 0:
+            return []
 
+        styles = ["white"] * n
+
+        # Single pass: track string regions and first unquoted colon
         in_str = False
-        for i in range(col + 1):
-            if line[i] == '"' and (i == 0 or line[i - 1] != "\\"):
+        is_in_str = [False] * n
+        first_colon = -1
+
+        for i in range(n):
+            ch = line[i]
+            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
                 in_str = not in_str
+                is_in_str[i] = True
+            elif in_str:
+                is_in_str[i] = True
+            elif ch == ":" and first_colon == -1:
+                first_colon = i
 
-        if in_str or ch == '"':
-            colon_pos = self._first_unquoted_colon(line)
-            return "cyan" if (colon_pos == -1 or col < colon_pos) else "green"
+        # Assign styles
+        for i in range(n):
+            ch = line[i]
+            if ch in self._BRACKET:
+                styles[i] = "bold white"
+            elif ch in self._PUNCT:
+                styles[i] = "white"
+            elif is_in_str[i]:
+                styles[i] = "cyan" if (first_colon == -1 or i < first_colon) else "green"
+            elif ch in self._DIGIT:
+                styles[i] = "yellow"
 
-        if ch in self._DIGIT:
-            return "yellow"
-
+        # Keywords outside strings
+        lower = line.lower()
         for kw in ("true", "false", "null"):
-            p = line.lower().find(kw)
-            if p != -1 and p <= col < p + len(kw):
-                return "magenta"
+            start = 0
+            while True:
+                p = lower.find(kw, start)
+                if p == -1:
+                    break
+                for j in range(p, min(p + len(kw), n)):
+                    if not is_in_str[j]:
+                        styles[j] = "magenta"
+                start = p + 1
 
-        return "white"
-
-    @staticmethod
-    def _first_unquoted_colon(line: str) -> int:
-        in_str = False
-        for i, c in enumerate(line):
-            if c == '"' and (i == 0 or line[i - 1] != "\\"):
-                in_str = not in_str
-            elif c == ":" and not in_str:
-                return i
-        return -1
+        return styles
 
     # =====================================================================
     # Key handling
@@ -680,6 +707,14 @@ class JsonEditor(Widget, can_focus=True):
             self.cursor_col += 4
             return
 
+        if key == "end":
+            self.cursor_col = len(self.lines[self.cursor_row])
+            return
+        if key == "home":
+            line = self.lines[self.cursor_row]
+            self.cursor_col = len(line) - len(line.lstrip())
+            return
+
         if key in ("left", "right", "up", "down"):
             delta = {"left": (0, -1), "right": (0, 1), "up": (-1, 0), "down": (1, 0)}
             dr, dc = delta[key]
@@ -740,7 +775,13 @@ class JsonEditor(Widget, can_focus=True):
     def _exec_command(self, cmd: str) -> None:
         stripped = cmd.strip()
 
-        # Line jump: :l<num> → logical (editor) line; :<num> or :p<num> → physical (JSONL record)
+        # :$ → jump to last line
+        if stripped == "$":
+            self.cursor_row = len(self.lines) - 1
+            self.cursor_col = 0
+            return
+
+        # Line jump: :l<num> → editor line; :<num> or :p<num> → file line (JSONL record)
         if len(stripped) > 1 and stripped[0] == "l" and stripped[1:].isdigit():
             num = int(stripped[1:])
             self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
