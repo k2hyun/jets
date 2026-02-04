@@ -1,5 +1,6 @@
 """jet: JSON Editor in Textual."""
 
-from .editor import JsonEditor, EditorMode
+from .editor import EditorMode, JsonEditor
 
-__all__ = ["JsonEditor", "EditorMode"]
+__all__ = ["EditorMode", "JsonEditor"]
+__version__ = "0.1.0"

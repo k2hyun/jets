@@ -48,6 +48,16 @@ class JsonEditor(Widget, can_focus=True):
         error: str = ""
 
     @dataclass
+    class FileSaveRequested(Message):
+        content: str
+        file_path: str       # empty string means save to current file
+        quit_after: bool = False
+
+    @dataclass
+    class FileOpenRequested(Message):
+        file_path: str
+
+    @dataclass
     class Quit(Message):
         pass
 
@@ -57,11 +67,15 @@ class JsonEditor(Widget, can_focus=True):
         self,
         initial_content: str = "",
         *,
+        read_only: bool = False,
+        jsonl: bool = False,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
+        self.read_only: bool = read_only
+        self.jsonl: bool = jsonl
         self.lines: list[str] = (
             initial_content.split("\n") if initial_content else [""]
         )
@@ -73,7 +87,7 @@ class JsonEditor(Widget, can_focus=True):
         self.status_msg: str = ""
         self.undo_stack: list[tuple[list[str], int, int]] = []
         self.yank_buffer: list[str] = []
-        self.scroll_offset: int = 0
+        self._scroll_top: int = 0
 
     # -- Helpers -----------------------------------------------------------
 
@@ -98,10 +112,10 @@ class JsonEditor(Widget, can_focus=True):
 
     def _ensure_cursor_visible(self) -> None:
         vh = self._visible_height()
-        if self.cursor_row < self.scroll_offset:
-            self.scroll_offset = self.cursor_row
-        elif self.cursor_row >= self.scroll_offset + vh:
-            self.scroll_offset = self.cursor_row - vh + 1
+        if self.cursor_row < self._scroll_top:
+            self._scroll_top = self.cursor_row
+        elif self.cursor_row >= self._scroll_top + vh:
+            self._scroll_top = self.cursor_row - vh + 1
 
     # -- Public API --------------------------------------------------------
 
@@ -131,7 +145,7 @@ class JsonEditor(Widget, can_focus=True):
         ln_width = max(3, len(str(len(self.lines))))
 
         for i in range(content_height):
-            line_idx = self.scroll_offset + i
+            line_idx = self._scroll_top + i
             if line_idx < len(self.lines):
                 line = self.lines[line_idx]
                 result.append(f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
@@ -150,13 +164,16 @@ class JsonEditor(Widget, can_focus=True):
         }
         mode_label = f" {self._mode.name} "
         result.append(mode_label, style=mode_style[self._mode])
+        if self.read_only:
+            result.append(" RO ", style="bold white on grey37")
 
         if self.pending:
             result.append(f"  {self.pending}", style="bold yellow")
 
+        ro_label = " RO " if self.read_only else ""
         pos = f" Ln {self.cursor_row + 1}/{len(self.lines)}, Col {self.cursor_col + 1} "
         spacer = max(
-            0, width - len(mode_label) - len(pos) - len(self.status_msg) - 4
+            0, width - len(mode_label) - len(ro_label) - len(pos) - len(self.status_msg) - 4
         )
         result.append(f"  {self.status_msg}")
         result.append(" " * spacer)
@@ -248,6 +265,9 @@ class JsonEditor(Widget, can_focus=True):
     # -- NORMAL ------------------------------------------------------------
 
     def _enter_insert(self) -> None:
+        if self.read_only:
+            self.status_msg = "[readonly]"
+            return
         self._mode = EditorMode.INSERT
         self.status_msg = "-- INSERT --"
 
@@ -283,10 +303,27 @@ class JsonEditor(Widget, can_focus=True):
             self.cursor_row = len(self.lines) - 1
         elif char == "%":
             self._jump_matching_bracket()
-        elif key == "pagedown":
+        elif key == "pagedown" or key == "ctrl+f":
             self.cursor_row += self._visible_height()
-        elif key == "pageup":
+        elif key == "pageup" or key == "ctrl+b":
             self.cursor_row -= self._visible_height()
+        elif key == "ctrl+d":
+            self.cursor_row += self._visible_height() // 2
+        elif key == "ctrl+u":
+            self.cursor_row -= self._visible_height() // 2
+        elif key == "ctrl+e":
+            self._scroll_top = min(
+                self._scroll_top + 1, len(self.lines) - 1
+            )
+        elif key == "ctrl+y":
+            self._scroll_top = max(self._scroll_top - 1, 0)
+        elif key == "ctrl+g":
+            total = len(self.lines)
+            pct = (self.cursor_row + 1) * 100 // total if total else 0
+            self.status_msg = (
+                f'"{self._mode.name}" line {self.cursor_row + 1} of {total}'
+                f" --{pct}%--"
+            )
 
         # enter insert mode
         elif char == "i":
@@ -302,41 +339,65 @@ class JsonEditor(Widget, can_focus=True):
             self.cursor_col = len(self.lines[self.cursor_row])
             self._enter_insert()
         elif char == "o":
-            self._save_undo()
-            indent = self._current_indent()
-            before = self.lines[self.cursor_row].rstrip()
-            extra = "    " if before.endswith(("{", "[")) else ""
-            self.cursor_row += 1
-            self.lines.insert(self.cursor_row, " " * indent + extra)
-            self.cursor_col = indent + len(extra)
-            self._enter_insert()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._save_undo()
+                indent = self._current_indent()
+                before = self.lines[self.cursor_row].rstrip()
+                extra = "    " if before.endswith(("{", "[")) else ""
+                self.cursor_row += 1
+                self.lines.insert(self.cursor_row, " " * indent + extra)
+                self.cursor_col = indent + len(extra)
+                self._enter_insert()
         elif char == "O":
-            self._save_undo()
-            indent = self._current_indent()
-            self.lines.insert(self.cursor_row, " " * indent)
-            self.cursor_col = indent
-            self._enter_insert()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._save_undo()
+                indent = self._current_indent()
+                self.lines.insert(self.cursor_row, " " * indent)
+                self.cursor_col = indent
+                self._enter_insert()
 
         # single-key edits
         elif char == "x":
-            self._save_undo()
-            line = self.lines[self.cursor_row]
-            if line and self.cursor_col < len(line):
-                self.lines[self.cursor_row] = (
-                    line[: self.cursor_col] + line[self.cursor_col + 1 :]
-                )
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._save_undo()
+                line = self.lines[self.cursor_row]
+                if line and self.cursor_col < len(line):
+                    self.lines[self.cursor_row] = (
+                        line[: self.cursor_col] + line[self.cursor_col + 1 :]
+                    )
         elif char == "p":
-            self._paste_after()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._paste_after()
         elif char == "P":
-            self._paste_before()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._paste_before()
         elif char == "u":
-            self._undo()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._undo()
         elif char == "J":
-            self._join_lines()
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._join_lines()
 
         # multi-key starters
         elif char in ("d", "c", "y", "r", "g"):
-            self.pending = char
+            if self.read_only and char not in ("y", "g"):
+                self.status_msg = "[readonly]"
+            else:
+                self.pending = char
 
         # command mode
         elif char == ":":
@@ -354,6 +415,10 @@ class JsonEditor(Widget, can_focus=True):
 
         combo = self.pending + char
         self.pending = ""
+
+        if self.read_only and combo not in ("yy", "gg"):
+            self.status_msg = "[readonly]"
+            return
 
         if combo == "dd":
             self._save_undo()
@@ -536,35 +601,99 @@ class JsonEditor(Widget, can_focus=True):
             self.command_buffer += char
 
     def _exec_command(self, cmd: str) -> None:
-        if cmd == "w":
-            self._validate_json()
-        elif cmd == "q":
+        parts = cmd.split(None, 1)
+        verb = parts[0] if parts else ""
+        arg = parts[1] if len(parts) > 1 else ""
+
+        force = verb.endswith("!")
+        if force:
+            verb = verb[:-1]
+
+        if verb == "w":
+            content = self.get_content()
+            if force:
+                self.post_message(
+                    self.FileSaveRequested(content=content, file_path=arg)
+                )
+            else:
+                valid, err = self._check_content(content)
+                if valid:
+                    self.post_message(
+                        self.FileSaveRequested(content=content, file_path=arg)
+                    )
+                else:
+                    self.status_msg = err
+        elif verb == "q":
             self.post_message(self.Quit())
-        elif cmd in ("wq", "x"):
-            if self._validate_json():
-                self.post_message(self.Quit())
-        elif cmd in ("fmt", "format"):
-            self._format_json()
+        elif verb in ("wq", "x"):
+            content = self.get_content()
+            if force:
+                self.post_message(
+                    self.FileSaveRequested(
+                        content=content, file_path=arg, quit_after=True
+                    )
+                )
+            else:
+                valid, err = self._check_content(content)
+                if valid:
+                    self.post_message(
+                        self.FileSaveRequested(
+                            content=content, file_path=arg, quit_after=True
+                        )
+                    )
+                else:
+                    self.status_msg = err
+        elif verb == "e":
+            if not arg:
+                self.status_msg = "Usage: :e <file>"
+            else:
+                self.post_message(self.FileOpenRequested(file_path=arg))
+        elif verb in ("fmt", "format"):
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._format_json()
         else:
             self.status_msg = f"unknown command: :{cmd}"
 
     # -- JSON operations ---------------------------------------------------
 
-    def _validate_json(self) -> bool:
-        content = self.get_content()
+    def _check_content(self, content: str) -> tuple[bool, str]:
+        """Validate content as JSON or JSONL. Returns (valid, error_msg)."""
+        if self.jsonl:
+            for i, line in enumerate(content.split("\n"), 1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    json.loads(stripped)
+                except json.JSONDecodeError as e:
+                    return False, f"JSONL error: line {i}: {e.msg}"
+            return True, ""
         try:
             json.loads(content)
-            self.status_msg = "JSON valid"
+            return True, ""
+        except json.JSONDecodeError as e:
+            return False, f"JSON error: {e.msg} (line {e.lineno})"
+
+    def _validate_json(self) -> bool:
+        content = self.get_content()
+        valid, err = self._check_content(content)
+        if valid:
+            label = "JSONL" if self.jsonl else "JSON"
+            self.status_msg = f"{label} valid"
             self.post_message(self.JsonValidated(content=content, valid=True))
             return True
-        except json.JSONDecodeError as e:
-            self.status_msg = f"JSON error: {e.msg} (line {e.lineno})"
-            self.post_message(
-                self.JsonValidated(content=content, valid=False, error=str(e))
-            )
-            return False
+        self.status_msg = err
+        self.post_message(
+            self.JsonValidated(content=content, valid=False, error=err)
+        )
+        return False
 
     def _format_json(self) -> None:
+        if self.jsonl:
+            self._format_jsonl()
+            return
         content = self.get_content()
         try:
             parsed = json.loads(content)
@@ -576,6 +705,25 @@ class JsonEditor(Widget, can_focus=True):
             self.status_msg = "formatted"
         except json.JSONDecodeError as e:
             self.status_msg = f"cannot format: {e.msg} (line {e.lineno})"
+
+    def _format_jsonl(self) -> None:
+        new_lines: list[str] = []
+        for i, line in enumerate(self.lines):
+            stripped = line.strip()
+            if not stripped:
+                new_lines.append("")
+                continue
+            try:
+                parsed = json.loads(stripped)
+                new_lines.append(json.dumps(parsed, ensure_ascii=False))
+            except json.JSONDecodeError as e:
+                self.status_msg = f"cannot format: line {i + 1}: {e.msg}"
+                return
+        self._save_undo()
+        self.lines = new_lines
+        self.cursor_row = 0
+        self.cursor_col = 0
+        self.status_msg = "formatted"
 
     # -- Movement helpers --------------------------------------------------
 
