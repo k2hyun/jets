@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -76,6 +77,8 @@ class JsonEditor(Widget, can_focus=True):
         super().__init__(name=name, id=id, classes=classes)
         self.read_only: bool = read_only
         self.jsonl: bool = jsonl
+        if self.jsonl and initial_content:
+            initial_content = self._jsonl_to_pretty(initial_content)
         self.lines: list[str] = (
             initial_content.split("\n") if initial_content else [""]
         )
@@ -107,15 +110,81 @@ class JsonEditor(Widget, can_focus=True):
             max_col = line_len
         self.cursor_col = max(0, min(self.cursor_col, max_col))
 
+    @staticmethod
+    def _char_width(ch: str) -> int:
+        """Return display width of a character (2 for fullwidth/wide)."""
+        return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+    def _make_segments(self, line: str, avail: int) -> list[tuple[int, int]]:
+        """Break *line* into segments fitting within *avail* display columns."""
+        if not line:
+            return [(0, 0)]
+        segs: list[tuple[int, int]] = []
+        seg_start = 0
+        w = 0
+        for i, ch in enumerate(line):
+            cw = self._char_width(ch)
+            if w + cw > avail and i > seg_start:
+                segs.append((seg_start, i))
+                seg_start = i
+                w = cw
+            else:
+                w += cw
+        segs.append((seg_start, len(line)))
+        return segs
+
+    def _wrap_rows(self, line: str, avail: int) -> int:
+        """Return the number of display rows a line occupies when wrapped."""
+        if not line:
+            return 1
+        rows = 1
+        w = 0
+        for ch in line:
+            cw = self._char_width(ch)
+            if w + cw > avail:
+                rows += 1
+                w = cw
+            else:
+                w += cw
+        return rows
+
+    def _cursor_wrap_dy(self, line: str, cursor_col: int, avail: int) -> int:
+        """Return the wrapped row index (0-based) of *cursor_col* within *line*."""
+        segs = self._make_segments(line, avail)
+        for si, (s_start, s_end) in enumerate(segs):
+            if cursor_col < s_end:
+                return si
+        # cursor at end of line — check if cursor block fits on last row
+        if line:
+            ls, le = segs[-1]
+            last_w = sum(self._char_width(line[c]) for c in range(ls, le))
+            if last_w + 1 > avail:
+                return len(segs)
+        return max(0, len(segs) - 1)
+
     def _visible_height(self) -> int:
-        return max(1, self.size.height - 2)
+        return max(1, self.content_region.height - 2)
 
     def _ensure_cursor_visible(self) -> None:
+        width = self.content_region.width
+        ln_width = max(3, len(str(len(self.lines))))
+        avail = max(1, width - ln_width - 1)
         vh = self._visible_height()
+
         if self.cursor_row < self._scroll_top:
             self._scroll_top = self.cursor_row
-        elif self.cursor_row >= self._scroll_top + vh:
-            self._scroll_top = self.cursor_row - vh + 1
+
+        while self._scroll_top <= self.cursor_row:
+            rows_before = sum(
+                self._wrap_rows(self.lines[i], avail)
+                for i in range(self._scroll_top, self.cursor_row)
+            )
+            cursor_dy = self._cursor_wrap_dy(
+                self.lines[self.cursor_row], self.cursor_col, avail
+            )
+            if rows_before + cursor_dy < vh:
+                break
+            self._scroll_top += 1
 
     # -- Public API --------------------------------------------------------
 
@@ -123,6 +192,8 @@ class JsonEditor(Widget, can_focus=True):
         return "\n".join(self.lines)
 
     def set_content(self, content: str) -> None:
+        if self.jsonl and content:
+            content = self._jsonl_to_pretty(content)
         self.lines = content.split("\n") if content else [""]
         self.cursor_row = 0
         self.cursor_col = 0
@@ -133,28 +204,62 @@ class JsonEditor(Widget, can_focus=True):
     # =====================================================================
 
     def render(self) -> Text:
-        width = self.size.width - 2
-        height = self.size.height
+        width = self.content_region.width
+        height = self.content_region.height
         if height < 3 or width < 10:
             return Text("(too small)")
 
         content_height = height - 2
+        ln_width = max(3, len(str(len(self.lines))))
+        avail = max(1, width - ln_width - 1)
+
         self._ensure_cursor_visible()
 
         result = Text()
-        ln_width = max(3, len(str(len(self.lines))))
+        rows_used = 0
+        line_idx = self._scroll_top
 
-        for i in range(content_height):
-            line_idx = self._scroll_top + i
-            if line_idx < len(self.lines):
-                line = self.lines[line_idx]
-                result.append(f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
-                if line_idx == self.cursor_row:
-                    self._render_cursor_line(result, line)
+        while rows_used < content_height and line_idx < len(self.lines):
+            line = self.lines[line_idx]
+            is_cursor = line_idx == self.cursor_row
+
+            # Break line into width-aware wrapped segments
+            segs = self._make_segments(line, avail)
+            # Cursor at end of line may need an extra wrap row
+            if is_cursor and self.cursor_col >= len(line) and line:
+                ls, le = segs[-1]
+                last_w = sum(self._char_width(line[c]) for c in range(ls, le))
+                if last_w + 1 > avail:
+                    segs.append((len(line), len(line)))
+
+            for si, (s_start, s_end) in enumerate(segs):
+                if rows_used >= content_height:
+                    break
+                # Line number on first row, indent on continuation
+                if si == 0:
+                    result.append(f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
                 else:
-                    self._render_line(result, line)
-            else:
-                result.append(f"{'~':>{ln_width}} \n", style="dim blue")
+                    result.append(" " * (ln_width + 1))
+                # Render segment with syntax highlighting
+                for col in range(s_start, s_end):
+                    ch = line[col]
+                    style = self._json_style_for(line, col)
+                    if is_cursor and col == self.cursor_col:
+                        result.append(ch, style=f"reverse {style}")
+                    else:
+                        result.append(ch, style=style)
+                # Cursor block at end of line (insert mode)
+                if is_cursor and self.cursor_col >= len(line) and si == len(segs) - 1:
+                    result.append(" ", style="reverse")
+                result.append("\n")
+                rows_used += 1
+
+            line_idx += 1
+
+        # Fill remaining rows with ~
+        while rows_used < content_height:
+            result.append(f"{'~':>{ln_width}} \n", style="dim blue")
+            rows_used += 1
 
         # status bar
         mode_style = {
@@ -227,22 +332,6 @@ class JsonEditor(Widget, can_focus=True):
             elif c == ":" and not in_str:
                 return i
         return -1
-
-    def _render_cursor_line(self, out: Text, line: str) -> None:
-        for col, ch in enumerate(line):
-            style = self._json_style_for(line, col)
-            if col == self.cursor_col:
-                out.append(ch, style=f"reverse {style}")
-            else:
-                out.append(ch, style=style)
-        if self.cursor_col >= len(line):
-            out.append(" ", style="reverse")
-        out.append("\n")
-
-    def _render_line(self, out: Text, line: str) -> None:
-        for col, ch in enumerate(line):
-            out.append(ch, style=self._json_style_for(line, col))
-        out.append("\n")
 
     # =====================================================================
     # Key handling
@@ -611,38 +700,30 @@ class JsonEditor(Widget, can_focus=True):
 
         if verb == "w":
             content = self.get_content()
-            if force:
-                self.post_message(
-                    self.FileSaveRequested(content=content, file_path=arg)
-                )
-            else:
+            if not force:
                 valid, err = self._check_content(content)
-                if valid:
-                    self.post_message(
-                        self.FileSaveRequested(content=content, file_path=arg)
-                    )
-                else:
+                if not valid:
                     self.status_msg = err
+                    return
+            save = self._pretty_to_jsonl(content) if self.jsonl else content
+            self.post_message(
+                self.FileSaveRequested(content=save, file_path=arg)
+            )
         elif verb == "q":
             self.post_message(self.Quit())
         elif verb in ("wq", "x"):
             content = self.get_content()
-            if force:
-                self.post_message(
-                    self.FileSaveRequested(
-                        content=content, file_path=arg, quit_after=True
-                    )
-                )
-            else:
+            if not force:
                 valid, err = self._check_content(content)
-                if valid:
-                    self.post_message(
-                        self.FileSaveRequested(
-                            content=content, file_path=arg, quit_after=True
-                        )
-                    )
-                else:
+                if not valid:
                     self.status_msg = err
+                    return
+            save = self._pretty_to_jsonl(content) if self.jsonl else content
+            self.post_message(
+                self.FileSaveRequested(
+                    content=save, file_path=arg, quit_after=True
+                )
+            )
         elif verb == "e":
             if not arg:
                 self.status_msg = "Usage: :e <file>"
@@ -661,14 +742,12 @@ class JsonEditor(Widget, can_focus=True):
     def _check_content(self, content: str) -> tuple[bool, str]:
         """Validate content as JSON or JSONL. Returns (valid, error_msg)."""
         if self.jsonl:
-            for i, line in enumerate(content.split("\n"), 1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
+            blocks = self._split_jsonl_blocks(content)
+            for i, block in enumerate(blocks, 1):
                 try:
-                    json.loads(stripped)
+                    json.loads(block)
                 except json.JSONDecodeError as e:
-                    return False, f"JSONL error: line {i}: {e.msg}"
+                    return False, f"JSONL error: record {i}: {e.msg}"
             return True, ""
         try:
             json.loads(content)
@@ -707,23 +786,67 @@ class JsonEditor(Widget, can_focus=True):
             self.status_msg = f"cannot format: {e.msg} (line {e.lineno})"
 
     def _format_jsonl(self) -> None:
-        new_lines: list[str] = []
-        for i, line in enumerate(self.lines):
-            stripped = line.strip()
-            if not stripped:
-                new_lines.append("")
-                continue
+        content = self.get_content()
+        blocks = self._split_jsonl_blocks(content)
+        formatted: list[str] = []
+        for i, block in enumerate(blocks):
             try:
-                parsed = json.loads(stripped)
-                new_lines.append(json.dumps(parsed, ensure_ascii=False))
+                parsed = json.loads(block)
+                formatted.append(json.dumps(parsed, indent=4, ensure_ascii=False))
             except json.JSONDecodeError as e:
-                self.status_msg = f"cannot format: line {i + 1}: {e.msg}"
+                self.status_msg = f"cannot format: record {i + 1}: {e.msg}"
                 return
         self._save_undo()
-        self.lines = new_lines
+        self.lines = "\n\n".join(formatted).split("\n")
         self.cursor_row = 0
         self.cursor_col = 0
         self.status_msg = "formatted"
+
+    # -- JSONL helpers -----------------------------------------------------
+
+    @staticmethod
+    def _jsonl_to_pretty(content: str) -> str:
+        """Convert JSONL (one-json-per-line) to pretty-printed blocks."""
+        blocks: list[str] = []
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+                blocks.append(json.dumps(parsed, indent=4, ensure_ascii=False))
+            except json.JSONDecodeError:
+                blocks.append(stripped)
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _split_jsonl_blocks(content: str) -> list[str]:
+        """Split pretty-printed content into blocks separated by blank lines."""
+        blocks: list[str] = []
+        current: list[str] = []
+        for line in content.split("\n"):
+            if line.strip():
+                current.append(line)
+            else:
+                if current:
+                    blocks.append("\n".join(current))
+                    current = []
+        if current:
+            blocks.append("\n".join(current))
+        return blocks
+
+    @staticmethod
+    def _pretty_to_jsonl(content: str) -> str:
+        """Convert pretty-printed blocks back to JSONL (one-json-per-line)."""
+        blocks = JsonEditor._split_jsonl_blocks(content)
+        lines: list[str] = []
+        for block in blocks:
+            try:
+                parsed = json.loads(block)
+                lines.append(json.dumps(parsed, ensure_ascii=False))
+            except json.JSONDecodeError:
+                lines.append(" ".join(block.split()))
+        return "\n".join(lines)
 
     # -- Movement helpers --------------------------------------------------
 
