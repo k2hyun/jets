@@ -91,8 +91,37 @@ class JsonEditor(Widget, can_focus=True):
         self.undo_stack: list[tuple[list[str], int, int]] = []
         self.yank_buffer: list[str] = []
         self._scroll_top: int = 0
+        self._dot_buffer: list[tuple[str, str | None]] = []
+        self._dot_recording: bool = False
+        self._dot_replaying: bool = False
 
     # -- Helpers -----------------------------------------------------------
+
+    def _dot_start(self, event) -> None:
+        """Begin recording a new edit sequence for dot-repeat."""
+        if self._dot_replaying:
+            return
+        self._dot_buffer = [(event.key, event.character)]
+        self._dot_recording = True
+
+    def _dot_stop(self) -> None:
+        self._dot_recording = False
+
+    def _dot_replay(self) -> None:
+        """Replay the last recorded edit sequence."""
+        if not self._dot_buffer:
+            return
+        from types import SimpleNamespace
+
+        self._dot_replaying = True
+        for rkey, rchar in self._dot_buffer:
+            mock = SimpleNamespace(key=rkey, character=rchar)
+            if self._mode == EditorMode.NORMAL:
+                self._handle_normal(mock)
+            elif self._mode == EditorMode.INSERT:
+                self._handle_insert(mock)
+            self._clamp_cursor()
+        self._dot_replaying = False
 
     def _save_undo(self) -> None:
         self.undo_stack.append(
@@ -416,6 +445,9 @@ class JsonEditor(Widget, can_focus=True):
         event.prevent_default()
         event.stop()
 
+        if not self._dot_replaying and self._dot_recording:
+            self._dot_buffer.append((event.key, event.character))
+
         if self._mode == EditorMode.NORMAL:
             self._handle_normal(event)
         elif self._mode == EditorMode.INSERT:
@@ -491,21 +523,30 @@ class JsonEditor(Widget, can_focus=True):
 
         # enter insert mode
         elif char == "i":
+            if not self.read_only:
+                self._dot_start(event)
             self._enter_insert()
         elif char == "I":
+            if not self.read_only:
+                self._dot_start(event)
             line = self.lines[self.cursor_row]
             self.cursor_col = len(line) - len(line.lstrip())
             self._enter_insert()
         elif char == "a":
+            if not self.read_only:
+                self._dot_start(event)
             self.cursor_col += 1
             self._enter_insert()
         elif char == "A":
+            if not self.read_only:
+                self._dot_start(event)
             self.cursor_col = len(self.lines[self.cursor_row])
             self._enter_insert()
         elif char == "o":
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
                 self._save_undo()
                 indent = self._current_indent()
                 before = self.lines[self.cursor_row].rstrip()
@@ -518,6 +559,7 @@ class JsonEditor(Widget, can_focus=True):
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
                 self._save_undo()
                 indent = self._current_indent()
                 self.lines.insert(self.cursor_row, " " * indent)
@@ -529,6 +571,8 @@ class JsonEditor(Widget, can_focus=True):
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
+                self._dot_stop()
                 self._save_undo()
                 line = self.lines[self.cursor_row]
                 if line and self.cursor_col < len(line):
@@ -539,11 +583,15 @@ class JsonEditor(Widget, can_focus=True):
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
+                self._dot_stop()
                 self._paste_after()
         elif char == "P":
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
+                self._dot_stop()
                 self._paste_before()
         elif char == "u":
             if self.read_only:
@@ -554,13 +602,22 @@ class JsonEditor(Widget, can_focus=True):
             if self.read_only:
                 self.status_msg = "[readonly]"
             else:
+                self._dot_start(event)
+                self._dot_stop()
                 self._join_lines()
+
+        # dot repeat
+        elif char == ".":
+            if not self.read_only:
+                self._dot_replay()
 
         # multi-key starters
         elif char in ("d", "c", "y", "r", "g"):
             if self.read_only and char not in ("y", "g"):
                 self.status_msg = "[readonly]"
             else:
+                if char not in ("y", "g"):
+                    self._dot_start(event)
                 self.pending = char
 
         # command mode
@@ -575,6 +632,7 @@ class JsonEditor(Widget, can_focus=True):
         if key == "escape" or not char:
             self.pending = ""
             self.status_msg = ""
+            self._dot_stop()
             return
 
         combo = self.pending + char
@@ -595,26 +653,31 @@ class JsonEditor(Widget, can_focus=True):
                 self.lines[0] = ""
             self.cursor_col = 0
             self.status_msg = "line deleted"
+            self._dot_stop()
 
         elif combo == "dw":
             self._save_undo()
             self._delete_word()
+            self._dot_stop()
 
         elif combo == "d$":
             self._save_undo()
             line = self.lines[self.cursor_row]
             self.lines[self.cursor_row] = line[: self.cursor_col]
+            self._dot_stop()
 
         elif combo == "d0":
             self._save_undo()
             line = self.lines[self.cursor_row]
             self.lines[self.cursor_row] = line[self.cursor_col :]
             self.cursor_col = 0
+            self._dot_stop()
 
         elif combo == "cw":
             self._save_undo()
             self._delete_word()
             self._enter_insert()
+            # recording continues into insert mode
 
         elif combo == "cc":
             self._save_undo()
@@ -623,6 +686,7 @@ class JsonEditor(Widget, can_focus=True):
             self.lines[self.cursor_row] = " " * indent
             self.cursor_col = indent
             self._enter_insert()
+            # recording continues into insert mode
 
         elif combo == "yy":
             self.yank_buffer = [self.lines[self.cursor_row]]
@@ -639,7 +703,9 @@ class JsonEditor(Widget, can_focus=True):
                 self.lines[self.cursor_row] = (
                     line[: self.cursor_col] + combo[1] + line[self.cursor_col + 1 :]
                 )
+            self._dot_stop()
         else:
+            self._dot_stop()
             self.status_msg = f"unknown: {combo}"
 
     # -- INSERT ------------------------------------------------------------
@@ -649,6 +715,7 @@ class JsonEditor(Widget, can_focus=True):
         char = event.character
 
         if key == "escape":
+            self._dot_stop()
             self._mode = EditorMode.NORMAL
             self.cursor_col = max(0, self.cursor_col - 1)
             self.status_msg = ""
