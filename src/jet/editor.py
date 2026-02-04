@@ -162,13 +162,52 @@ class JsonEditor(Widget, can_focus=True):
                 return len(segs)
         return max(0, len(segs) - 1)
 
+    def _gutter_widths(self) -> tuple[int, int, int]:
+        """Return ``(ln_width, rec_width, prefix_width)``.
+
+        *rec_width* is 0 when not in JSONL mode.
+        """
+        ln_width = max(3, len(str(len(self.lines))))
+        if not self.jsonl:
+            return ln_width, 0, ln_width + 1
+        rec_count = 0
+        in_block = False
+        for line in self.lines:
+            if line.strip():
+                if not in_block:
+                    rec_count += 1
+                    in_block = True
+            else:
+                in_block = False
+        rec_width = max(2, len(str(max(1, rec_count))))
+        return ln_width, rec_width, rec_width + 1 + ln_width + 1
+
+    def _jsonl_line_records(self) -> list[int]:
+        """Map each editor line to its JSONL record number.
+
+        The first line of each block gets the 1-based record number;
+        all other lines (continuation / blank separator) get 0.
+        """
+        result = [0] * len(self.lines)
+        record = 0
+        in_block = False
+        for i, line in enumerate(self.lines):
+            if line.strip():
+                if not in_block:
+                    record += 1
+                    result[i] = record
+                    in_block = True
+            else:
+                in_block = False
+        return result
+
     def _visible_height(self) -> int:
         return max(1, self.content_region.height - 2)
 
     def _ensure_cursor_visible(self) -> None:
         width = self.content_region.width
-        ln_width = max(3, len(str(len(self.lines))))
-        avail = max(1, width - ln_width - 1)
+        _ln_w, _rec_w, prefix_w = self._gutter_widths()
+        avail = max(1, width - prefix_w)
         vh = self._visible_height()
 
         if self.cursor_row < self._scroll_top:
@@ -210,8 +249,9 @@ class JsonEditor(Widget, can_focus=True):
             return Text("(too small)")
 
         content_height = height - 2
-        ln_width = max(3, len(str(len(self.lines))))
-        avail = max(1, width - ln_width - 1)
+        ln_width, rec_width, prefix_w = self._gutter_widths()
+        avail = max(1, width - prefix_w)
+        jsonl_records = self._jsonl_line_records() if self.jsonl else None
 
         self._ensure_cursor_visible()
 
@@ -238,8 +278,16 @@ class JsonEditor(Widget, can_focus=True):
                 # Line number on first row, indent on continuation
                 if si == 0:
                     result.append(f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
+                    if rec_width:
+                        rec_num = jsonl_records[line_idx]
+                        if rec_num:
+                            result.append(
+                                f"{rec_num:>{rec_width}} ", style="dim yellow"
+                            )
+                        else:
+                            result.append(" " * (rec_width + 1))
                 else:
-                    result.append(" " * (ln_width + 1))
+                    result.append(" " * prefix_w)
                 # Render segment with syntax highlighting
                 for col in range(s_start, s_end):
                     ch = line[col]
@@ -258,7 +306,7 @@ class JsonEditor(Widget, can_focus=True):
 
         # Fill remaining rows with ~
         while rows_used < content_height:
-            result.append(f"{'~':>{ln_width}} \n", style="dim blue")
+            result.append(f"{'~':>{prefix_w - 1}} \n", style="dim blue")
             rows_used += 1
 
         # status bar
