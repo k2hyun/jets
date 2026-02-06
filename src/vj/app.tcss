@@ -1,0 +1,76 @@
+Screen {
+    layout: vertical;
+}
+#editor {
+    width: 1fr;
+    height: 1fr;
+    border: solid $accent;
+}
+#help-panel {
+    height: 20%;
+    display: none;
+}
+#help-panel.visible {
+    display: block;
+}
+#help-header {
+    height: auto;
+    padding: 0 1;
+    background: $accent;
+}
+#help-title {
+    width: 1fr;
+    padding: 0;
+}
+#help-close {
+    min-width: 3;
+    width: 3;
+    height: 1;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: transparent;
+    color: $text;
+}
+#help-close:hover {
+    background: $error;
+    color: $text;
+}
+#help-editor {
+    height: 1fr;
+    border: solid $accent;
+}
+#ej-panel {
+    height: 50%;
+    display: none;
+}
+#ej-panel.visible {
+    display: block;
+}
+#ej-header {
+    height: auto;
+    padding: 0 1;
+    background: $warning;
+}
+#ej-title {
+    width: 1fr;
+    padding: 0;
+}
+#ej-close {
+    min-width: 3;
+    width: 3;
+    height: 1;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: transparent;
+    color: $text;
+}
+#ej-close:hover {
+    background: $error;
+    color: $text;
+}
+#ej-editor {
+    height: 1fr;
+    border: solid $warning;
+}

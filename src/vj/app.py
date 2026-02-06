@@ -12,13 +12,20 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, Static
 
 from .editor import JsonEditor
-from .resources import APP_CSS, HELP_JSON, SAMPLE_JSON
+
+# Data directory path
+_DATA_DIR = Path(__file__).parent / "data"
+
+
+def _load_data(filename: str) -> str:
+    """Load content from data directory."""
+    return (_DATA_DIR / filename).read_text(encoding="utf-8")
 
 
 class JsonEditorApp(App):
     """TUI app that wraps the JsonEditor widget."""
 
-    CSS = APP_CSS
+    CSS_PATH = "app.tcss"
     TITLE = "JSON Editor"
     BINDINGS = []
 
@@ -35,8 +42,9 @@ class JsonEditorApp(App):
         self.initial_content = initial_content
         self.read_only = read_only
         self.jsonl = jsonl
-        # Embedded edit state - stack of (row, col_start, col_end, previous_content)
-        self._ej_stack: list[tuple[int, int, int, str]] = []
+        # Embedded edit state - stack of (row, col_start, col_end, parent_content, original_content)
+        self._ej_stack: list[tuple[int, int, int, str, str]] = []
+        self._main_was_read_only: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -50,7 +58,7 @@ class JsonEditorApp(App):
             with Horizontal(id="help-header"):
                 yield Static("[b]Help[/b]", id="help-title")
                 yield Button("\u2715", id="help-close", variant="error")
-            yield JsonEditor(HELP_JSON, read_only=True, id="help-editor")
+            yield JsonEditor(_load_data("help.json"), read_only=True, id="help-editor")
         with Vertical(id="ej-panel"):
             with Horizontal(id="ej-header"):
                 yield Static("[b]Edit Embedded JSON[/b]", id="ej-title")
@@ -79,7 +87,25 @@ class JsonEditorApp(App):
         focused = self.focused
         return focused is not None and focused.id == "ej-editor"
 
+    def on_key(self) -> None:
+        """Update ej title on key press to reflect modified state."""
+        if self._is_ej_editor_focused() and self._ej_stack:
+            self._update_ej_title()
+
     def on_json_editor_quit(self, event: JsonEditor.Quit) -> None:
+        if self._is_help_editor_focused():
+            self.query_one("#help-panel").remove_class("visible")
+            self.query_one("#editor").focus()
+        elif self._is_ej_editor_focused():
+            if self._ej_has_unsaved_changes():
+                self.notify("Unsaved changes! Use :w to save or :q! to discard", severity="warning")
+            else:
+                self._close_ej_panel()
+        else:
+            self.exit()
+
+    def on_json_editor_force_quit(self, event: JsonEditor.ForceQuit) -> None:
+        """Handle :q! to discard changes."""
         if self._is_help_editor_focused():
             self.query_one("#help-panel").remove_class("visible")
             self.query_one("#editor").focus()
@@ -105,15 +131,15 @@ class JsonEditorApp(App):
 
         # EJ editor: update parent and close/pop panel
         if self._is_ej_editor_focused() and self._ej_stack:
-            row, col_start, col_end, prev_content = self._ej_stack.pop()
+            row, col_start, col_end, prev_content, _ = self._ej_stack.pop()
             # Minify the JSON to a single line
             try:
                 parsed = json.loads(event.content)
                 minified = json.dumps(parsed, ensure_ascii=False)
             except json.JSONDecodeError:
                 self.notify("Invalid JSON", severity="error")
-                # Restore the popped entry
-                self._ej_stack.append((row, col_start, col_end, prev_content))
+                # Restore the popped entry with current content as new original
+                self._ej_stack.append((row, col_start, col_end, prev_content, event.content))
                 return
 
             if self._ej_stack:
@@ -125,16 +151,20 @@ class JsonEditorApp(App):
                 lines[row] = line[:col_start] + escaped + line[col_end:]
                 new_content = "\n".join(lines)
                 ej_editor.set_content(new_content)
+                # Update the original content in parent stack entry
+                parent = self._ej_stack[-1]
+                self._ej_stack[-1] = (parent[0], parent[1], parent[2], parent[3], new_content)
                 self._update_ej_title()
                 self.notify("Embedded JSON updated", severity="information")
             else:
-                # Update main editor
+                # Update main editor and restore its read-only state
                 main_editor = self.query_one("#editor", JsonEditor)
+                main_editor.read_only = self._main_was_read_only
                 main_editor.update_embedded_string(row, col_start, col_end, minified)
                 self.notify("Embedded JSON updated", severity="information")
                 if event.quit_after:
                     self.query_one("#ej-panel").remove_class("visible")
-                    self.query_one("#editor").focus()
+                    main_editor.focus()
             return
 
         target = event.file_path or self.file_path
@@ -190,24 +220,33 @@ class JsonEditorApp(App):
         elif event.button.id == "ej-close":
             self._close_ej_panel()
 
+    def _ej_has_unsaved_changes(self) -> bool:
+        """Check if current ej content differs from original."""
+        if not self._ej_stack:
+            return False
+        ej_editor = self.query_one("#ej-editor", JsonEditor)
+        current = ej_editor.get_content()
+        _, _, _, _, original = self._ej_stack[-1]
+        return current != original
+
     def _update_ej_title(self) -> None:
-        """Update ej panel title with current nesting level."""
+        """Update ej panel title with current nesting level and modified indicator."""
         level = len(self._ej_stack)
         title = self.query_one("#ej-title", Static)
-        if level > 1:
-            title.update(f"[b]Edit Embedded JSON[/b] [dim](level {level})[/dim]")
-        else:
-            title.update("[b]Edit Embedded JSON[/b]")
+        modified = " [+]" if self._ej_has_unsaved_changes() else ""
+        title.update(f"[b]Edit Embedded JSON[/b] [dim](level {level}){modified}[/dim]")
 
     def _close_ej_panel(self) -> None:
         """Close or pop one level of ej editing."""
         if not self._ej_stack:
             self.query_one("#ej-panel").remove_class("visible")
-            self.query_one("#editor").focus()
+            main_editor = self.query_one("#editor", JsonEditor)
+            main_editor.read_only = self._main_was_read_only
+            main_editor.focus()
             return
 
         # Pop current level and get content to restore
-        _, _, _, restore_content = self._ej_stack.pop()
+        _, _, _, restore_content, _ = self._ej_stack.pop()
 
         if self._ej_stack:
             # Restore previous level content
@@ -215,28 +254,43 @@ class JsonEditorApp(App):
             ej_editor.set_content(restore_content)
             self._update_ej_title()
         else:
-            # No more levels, close panel
+            # No more levels, close panel and restore main editor state
             self.query_one("#ej-panel").remove_class("visible")
-            self.query_one("#editor").focus()
+            main_editor = self.query_one("#editor", JsonEditor)
+            main_editor.read_only = self._main_was_read_only
+            main_editor.focus()
 
     def on_json_editor_embedded_edit_requested(
         self, event: JsonEditor.EmbeddedEditRequested
     ) -> None:
-        # Get current content before switching (for nested ej)
         ej_editor = self.query_one("#ej-editor", JsonEditor)
-        current_content = ej_editor.get_content() if self._ej_stack else ""
 
-        # Push to stack: (row, col_start, col_end, content_at_this_level)
-        self._ej_stack.append((
-            event.source_row,
-            event.source_col_start,
-            event.source_col_end,
-            current_content,
-        ))
+        if self._is_ej_editor_focused():
+            # Nested ej from ej panel - push to stack
+            current_content = ej_editor.get_content()
+            self._ej_stack.append((
+                event.source_row,
+                event.source_col_start,
+                event.source_col_end,
+                current_content,
+                event.content,  # original content for change detection
+            ))
+        else:
+            # From main editor - reset stack to level 1
+            main_editor = self.query_one("#editor", JsonEditor)
+            self._main_was_read_only = main_editor.read_only
+            main_editor.read_only = True
+            self._ej_stack = [(
+                event.source_row,
+                event.source_col_start,
+                event.source_col_end,
+                "",  # No previous ej content
+                event.content,  # original content for change detection
+            )]
 
         # Set content and show panel
-        self._update_ej_title()
         ej_editor.set_content(event.content)
+        self._update_ej_title()
         self.query_one("#ej-panel").add_class("visible")
         ej_editor.focus()
 
@@ -261,7 +315,7 @@ def main() -> None:
     args = parser.parse_args()
 
     file_path: str = args.file
-    initial_content: str = SAMPLE_JSON
+    initial_content: str = _load_data("sample.json")
     jsonl: bool = file_path.lower().endswith(".jsonl") if file_path else False
 
     if file_path:

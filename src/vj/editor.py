@@ -63,6 +63,10 @@ class JsonEditor(Widget, can_focus=True):
         pass
 
     @dataclass
+    class ForceQuit(Message):
+        pass
+
+    @dataclass
     class HelpToggleRequested(Message):
         pass
 
@@ -940,7 +944,10 @@ class JsonEditor(Widget, can_focus=True):
                 self.FileSaveRequested(content=save, file_path=arg)
             )
         elif verb == "q":
-            self.post_message(self.Quit())
+            if force:
+                self.post_message(self.ForceQuit())
+            else:
+                self.post_message(self.Quit())
         elif verb in ("wq", "x"):
             if self.read_only:
                 # read-only: just quit without saving

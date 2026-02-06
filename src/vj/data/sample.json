@@ -1,0 +1,25 @@
+{
+    "name": "json-editor",
+    "version": "1.0.0",
+    "description": "A modal JSON editor built with Textual",
+    "features": [
+        "normal mode",
+        "insert mode",
+        "command mode",
+        "syntax highlighting",
+        "json validation",
+        "bracket matching"
+    ],
+    "config": {
+        "theme": "dark",
+        "indent_size": 4,
+        "auto_format": true,
+        "max_undo": 200,
+        "nested": {
+            "deep": {
+                "value": null
+            }
+        }
+    },
+    "scores": [100, 200, 300]
+}

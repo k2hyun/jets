@@ -1,0 +1,39 @@
+{
+    "Movement": {
+        "h j k l": "left/down/up/right",
+        "w b": "word forward/backward",
+        "0 $ ^": "line start/end/first char",
+        "gg G": "file start/end",
+        "%": "jump to matching bracket",
+        "PgUp PgDn": "page up/down",
+        "Ctrl+d/u": "half page down/up"
+    },
+    "Insert Mode": {
+        "i I": "insert at cursor/line start",
+        "a A": "append after cursor/line end",
+        "o O": "open line below/above"
+    },
+    "Editing": {
+        "x": "delete char",
+        "dd": "delete line",
+        "dw d$": "delete word/to end",
+        "cw cc": "change word/line",
+        "r{c}": "replace char",
+        "J": "join lines",
+        "yy p P": "yank/paste after/before",
+        "u": "undo",
+        "Ctrl+r": "redo",
+        ".": "repeat last edit",
+        "ej": "edit embedded JSON string"
+    },
+    "Commands": {
+        ":w": "save",
+        ":w {file}": "save as",
+        ":e {file}": "open file",
+        ":fmt": "format JSON",
+        ":q": "quit (confirm if changed)",
+        ":q!": "quit (discard changes)",
+        ":wq": "save and quit",
+        ":help": "toggle this help"
+    }
+}
