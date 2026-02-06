@@ -4,7 +4,6 @@ Screen {
 #editor {
     width: 1fr;
     height: 1fr;
-    border: solid $accent;
 }
 #help-panel {
     height: 20%;
@@ -38,7 +37,6 @@ Screen {
 }
 #help-editor {
     height: 1fr;
-    border: solid $accent;
 }
 #ej-panel {
     height: 50%;
@@ -72,5 +70,4 @@ Screen {
 }
 #ej-editor {
     height: 1fr;
-    border: solid $warning;
 }

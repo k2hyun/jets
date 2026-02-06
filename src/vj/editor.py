@@ -334,6 +334,22 @@ class JsonEditor(Widget, can_focus=True):
         line_idx = self._scroll_top
         num_lines = len(lines)
 
+        # Floating header for JSONL: show record start line when scrolled into middle of record
+        if self.jsonl and jsonl_records and self._scroll_top > 0:
+            first_visible_rec = jsonl_records[self._scroll_top]
+            if first_visible_rec == 0:
+                # We're in the middle of a record, find its start line
+                rec_start_line = self._scroll_top - 1
+                while rec_start_line >= 0 and jsonl_records[rec_start_line] == 0:
+                    rec_start_line -= 1
+                if rec_start_line >= 0:
+                    rec_num = jsonl_records[rec_start_line]
+                    # Show floating header
+                    header = f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
+                    result_append(result, header, style="bold cyan on grey23")
+                    result_append(result, " " * (width - len(header)) + "\n")
+                    rows_used += 1
+
         while rows_used < content_height and line_idx < num_lines:
             line = lines[line_idx]
             is_cursor_line = line_idx == cursor_row
@@ -363,8 +379,8 @@ class JsonEditor(Widget, can_focus=True):
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
                     break
-                # Line number on first row, indent on continuation
-                if si == 0:
+                # Line number on first segment, or first visible row (floating line number)
+                if si == 0 or rows_used == 0:
                     result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
                     if rec_width:
                         rec_num = jsonl_records[line_idx]

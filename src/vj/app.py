@@ -9,7 +9,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Button, Header, Static
 
 from .editor import JsonEditor
 
@@ -28,6 +28,7 @@ class JsonEditorApp(App):
     CSS_PATH = "app.tcss"
     TITLE = "JSON Editor"
     BINDINGS = []
+    ENABLE_COMMAND_PALETTE = False
 
     def __init__(
         self,
@@ -64,7 +65,6 @@ class JsonEditorApp(App):
                 yield Static("[b]Edit Embedded JSON[/b]", id="ej-title")
                 yield Button("\u2715", id="ej-close", variant="error")
             yield JsonEditor("", id="ej-editor")
-        yield Footer()
 
     def on_mount(self) -> None:
         self._update_title()
