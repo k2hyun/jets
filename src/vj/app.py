@@ -151,9 +151,7 @@ class JsonEditorApp(App):
                 lines[row] = line[:col_start] + escaped + line[col_end:]
                 new_content = "\n".join(lines)
                 ej_editor.set_content(new_content)
-                # Update the original content in parent stack entry
-                parent = self._ej_stack[-1]
-                self._ej_stack[-1] = (parent[0], parent[1], parent[2], parent[3], new_content)
+                # Keep original content unchanged so modified indicator stays
                 self._update_ej_title()
                 self.notify("Embedded JSON updated", severity="information")
             else:

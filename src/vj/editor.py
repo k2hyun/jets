@@ -1677,38 +1677,41 @@ class JsonEditor(Widget, can_focus=True):
         self.status_msg = "formatted"
 
     def _find_string_at_cursor(self) -> tuple[int, int, str] | None:
-        """Find the string value at the current cursor position.
+        """Find a string value on the current line.
 
-        Returns (col_start, col_end, string_content) or None if not on a string.
+        Returns (col_start, col_end, string_content) or None if no string value found.
         col_start and col_end include the quotes.
         """
         line = self.lines[self.cursor_row]
-        col = self.cursor_col
 
-        # Find if we're inside a string
-        in_string = False
-        string_start = -1
+        # Parse all strings on this line with their positions
+        strings: list[tuple[int, int, str]] = []  # (start, end, content)
         i = 0
         while i < len(line):
-            ch = line[i]
-            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
-                if not in_string:
-                    in_string = True
-                    string_start = i
-                else:
-                    # End of string
-                    if string_start <= col <= i:
-                        # Cursor is in this string
-                        raw = line[string_start + 1 : i]
-                        # Unescape the string
+            if line[i] == '"':
+                start = i
+                i += 1
+                while i < len(line):
+                    if line[i] == '"' and line[i - 1] != '\\':
+                        raw = line[start + 1:i]
                         try:
                             content = json.loads(f'"{raw}"')
-                            return (string_start, i + 1, content)
+                            strings.append((start, i + 1, content))
                         except json.JSONDecodeError:
-                            return None
-                    in_string = False
-                    string_start = -1
+                            pass
+                        break
+                    i += 1
             i += 1
+
+        if not strings:
+            return None
+
+        # Find string values (strings that follow a ':')
+        for start, end, content in strings:
+            before = line[:start].rstrip()
+            if before.endswith(':'):
+                return (start, end, content)
+
         return None
 
     def _edit_embedded_json(self) -> None:
