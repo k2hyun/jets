@@ -1,4 +1,4 @@
-"""jet: JSON Editor in Textual."""
+"""vj: JSON Editor in Textual."""
 
 from .editor import EditorMode, JsonEditor
 

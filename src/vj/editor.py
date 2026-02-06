@@ -62,6 +62,21 @@ class JsonEditor(Widget, can_focus=True):
     class Quit(Message):
         pass
 
+    @dataclass
+    class HelpToggleRequested(Message):
+        pass
+
+    @dataclass
+    class EmbeddedEditRequested(Message):
+        content: str  # Parsed JSON content to edit
+        source_row: int  # Row of the string value
+        source_col_start: int  # Column where string starts (including quote)
+        source_col_end: int  # Column where string ends (including quote)
+
+    @dataclass
+    class EmbeddedEditSave(Message):
+        content: str  # Updated JSON content
+
     # -- Init --------------------------------------------------------------
 
     def __init__(
@@ -89,6 +104,7 @@ class JsonEditor(Widget, can_focus=True):
         self.pending: str = ""
         self.status_msg: str = ""
         self.undo_stack: list[tuple[list[str], int, int]] = []
+        self.redo_stack: list[tuple[list[str], int, int]] = []
         self.yank_buffer: list[str] = []
         self._scroll_top: int = 0
         self._dot_buffer: list[tuple[str, str | None]] = []
@@ -124,11 +140,12 @@ class JsonEditor(Widget, can_focus=True):
         self._dot_replaying = False
 
     def _save_undo(self) -> None:
-        self.undo_stack.append(
-            ([line for line in self.lines], self.cursor_row, self.cursor_col)
-        )
+        self.undo_stack.append((self.lines[:], self.cursor_row, self.cursor_col))
         if len(self.undo_stack) > 200:
             self.undo_stack.pop(0)
+        # Clear redo stack on new edit
+        if self.redo_stack:
+            self.redo_stack.clear()
 
     def _clamp_cursor(self) -> None:
         self.cursor_row = max(0, min(self.cursor_row, len(self.lines) - 1))
@@ -289,95 +306,105 @@ class JsonEditor(Widget, can_focus=True):
 
         self._ensure_cursor_visible(avail)
 
+        # Local references for hot path
+        lines = self.lines
+        cursor_row = self.cursor_row
+        cursor_col = self.cursor_col
+        make_segments = self._make_segments
+        char_width = self._char_width
+        compute_styles = self._compute_line_styles
+        result_append = Text.append
+
         result = Text()
         rows_used = 0
         line_idx = self._scroll_top
+        num_lines = len(lines)
 
-        while rows_used < content_height and line_idx < len(self.lines):
-            line = self.lines[line_idx]
-            is_cursor = line_idx == self.cursor_row
+        while rows_used < content_height and line_idx < num_lines:
+            line = lines[line_idx]
+            is_cursor_line = line_idx == cursor_row
+            line_len = len(line)
 
             # Break line into width-aware wrapped segments
-            segs = self._make_segments(line, avail)
+            segs = make_segments(line, avail)
             # Cursor at end of line may need an extra wrap row
-            if is_cursor and self.cursor_col >= len(line) and line:
+            if is_cursor_line and cursor_col >= line_len and line:
                 ls, le = segs[-1]
-                last_w = sum(self._char_width(line[c]) for c in range(ls, le))
+                last_w = sum(char_width(line[c]) for c in range(ls, le))
                 if last_w + 1 > avail:
-                    segs.append((len(line), len(line)))
+                    segs.append((line_len, line_len))
 
             # Pre-compute styles once per line
-            line_styles = self._compute_line_styles(line)
+            line_styles = compute_styles(line)
 
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
                     break
                 # Line number on first row, indent on continuation
                 if si == 0:
-                    result.append(f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
+                    result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
                     if rec_width:
                         rec_num = jsonl_records[line_idx]
                         if rec_num:
-                            result.append(
-                                f"{rec_num:>{rec_width}} ", style="dim yellow"
-                            )
+                            result_append(result, f"{rec_num:>{rec_width}} ", style="dim yellow")
                         else:
-                            result.append(" " * (rec_width + 1))
+                            result_append(result, " " * (rec_width + 1))
                 else:
-                    result.append(" " * prefix_w)
+                    result_append(result, " " * prefix_w)
                 # Render segment — batch consecutive chars with same style
                 col = s_start
                 while col < s_end:
-                    if is_cursor and col == self.cursor_col:
-                        result.append(line[col], style=f"reverse {line_styles[col]}")
+                    if is_cursor_line and col == cursor_col:
+                        result_append(result, line[col], style=f"reverse {line_styles[col]}")
                         col += 1
                         continue
                     sty = line_styles[col]
                     end = col + 1
-                    while end < s_end and line_styles[end] == sty and not (is_cursor and end == self.cursor_col):
+                    while end < s_end and line_styles[end] == sty and not (is_cursor_line and end == cursor_col):
                         end += 1
-                    result.append(line[col:end], style=sty)
+                    result_append(result, line[col:end], style=sty)
                     col = end
                 # Cursor block at end of line (insert mode)
-                if is_cursor and self.cursor_col >= len(line) and si == len(segs) - 1:
-                    result.append(" ", style="reverse")
-                result.append("\n")
+                if is_cursor_line and cursor_col >= line_len and si == len(segs) - 1:
+                    result_append(result, " ", style="reverse")
+                result_append(result, "\n")
                 rows_used += 1
 
             line_idx += 1
 
         # Fill remaining rows with ~
-        while rows_used < content_height:
-            result.append(f"{'~':>{prefix_w - 1}} \n", style="dim blue")
-            rows_used += 1
+        if rows_used < content_height:
+            tilde_line = f"{'~':>{prefix_w - 1}} \n"
+            while rows_used < content_height:
+                result_append(result, tilde_line, style="dim blue")
+                rows_used += 1
 
         # status bar
-        mode_style = {
-            EditorMode.NORMAL: "bold white on dark_green",
-            EditorMode.INSERT: "bold white on dark_blue",
-            EditorMode.COMMAND: "bold white on dark_red",
-        }
-        mode_label = f" {self._mode.name} "
-        result.append(mode_label, style=mode_style[self._mode])
-        if self.read_only:
-            result.append(" RO ", style="bold white on grey37")
+        mode = self._mode
+        mode_label = f" {mode.name} "
+        result_append(result, mode_label, style=self._MODE_STYLE[mode])
 
-        if self.pending:
-            result.append(f"  {self.pending}", style="bold yellow")
+        read_only = self.read_only
+        if read_only:
+            result_append(result, " RO ", style="bold white on grey37")
 
-        ro_label = " RO " if self.read_only else ""
-        pos = f" Ln {self.cursor_row + 1}/{len(self.lines)}, Col {self.cursor_col + 1} "
-        spacer = max(
-            0, width - len(mode_label) - len(ro_label) - len(pos) - len(self.status_msg) - 4
-        )
-        result.append(f"  {self.status_msg}")
-        result.append(" " * spacer)
-        result.append(pos, style="bold")
+        pending = self.pending
+        if pending:
+            result_append(result, f"  {pending}", style="bold yellow")
 
-        if self._mode == EditorMode.COMMAND:
-            result.append(f"\n:{self.command_buffer}", style="bold yellow")
+        status_msg = self.status_msg
+        pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
+        ro_len = 4 if read_only else 0
+        spacer_len = max(0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4)
+        result_append(result, f"  {status_msg}")
+        if spacer_len:
+            result_append(result, " " * spacer_len)
+        result_append(result, pos, style="bold")
+
+        if mode == EditorMode.COMMAND:
+            result_append(result, f"\n:{self.command_buffer}", style="bold yellow")
         else:
-            result.append("\n")
+            result_append(result, "\n")
 
         return result
 
@@ -386,6 +413,12 @@ class JsonEditor(Widget, can_focus=True):
     _BRACKET = frozenset("{}[]")
     _PUNCT = frozenset(":,")
     _DIGIT = frozenset("0123456789.-+eE")
+    _KEYWORDS = ("true", "false", "null")
+    _MODE_STYLE = {
+        EditorMode.NORMAL: "bold white on dark_green",
+        EditorMode.INSERT: "bold white on dark_blue",
+        EditorMode.COMMAND: "bold white on dark_red",
+    }
 
     def _compute_line_styles(self, line: str) -> list[str]:
         """Compute syntax highlight styles for every character in *line*."""
@@ -393,44 +426,50 @@ class JsonEditor(Widget, can_focus=True):
         if n == 0:
             return []
 
+        # Local references for hot path
+        BRACKET = self._BRACKET
+        PUNCT = self._PUNCT
+        DIGIT = self._DIGIT
+
         styles = ["white"] * n
+        is_in_str = [False] * n
 
         # Single pass: track string regions and first unquoted colon
         in_str = False
-        is_in_str = [False] * n
         first_colon = -1
+        prev_ch = ""
 
-        for i in range(n):
-            ch = line[i]
-            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
+        for i, ch in enumerate(line):
+            if ch == '"' and prev_ch != "\\":
                 in_str = not in_str
                 is_in_str[i] = True
             elif in_str:
                 is_in_str[i] = True
             elif ch == ":" and first_colon == -1:
                 first_colon = i
+            prev_ch = ch
 
-        # Assign styles
-        for i in range(n):
-            ch = line[i]
-            if ch in self._BRACKET:
+        # Assign styles in single pass
+        for i, ch in enumerate(line):
+            if ch in BRACKET:
                 styles[i] = "bold white"
-            elif ch in self._PUNCT:
-                styles[i] = "white"
             elif is_in_str[i]:
-                styles[i] = "cyan" if (first_colon == -1 or i < first_colon) else "green"
-            elif ch in self._DIGIT:
+                styles[i] = "cyan" if first_colon == -1 or i < first_colon else "green"
+            elif ch in DIGIT:
                 styles[i] = "yellow"
+            # PUNCT stays "white" (default)
 
         # Keywords outside strings
         lower = line.lower()
-        for kw in ("true", "false", "null"):
+        for kw in self._KEYWORDS:
+            kw_len = len(kw)
             start = 0
             while True:
                 p = lower.find(kw, start)
                 if p == -1:
                     break
-                for j in range(p, min(p + len(kw), n)):
+                end = min(p + kw_len, n)
+                for j in range(p, end):
                     if not is_in_str[j]:
                         styles[j] = "magenta"
                 start = p + 1
@@ -598,6 +637,11 @@ class JsonEditor(Widget, can_focus=True):
                 self.status_msg = "[readonly]"
             else:
                 self._undo()
+        elif key == "ctrl+r":
+            if self.read_only:
+                self.status_msg = "[readonly]"
+            else:
+                self._redo()
         elif char == "J":
             if self.read_only:
                 self.status_msg = "[readonly]"
@@ -612,11 +656,11 @@ class JsonEditor(Widget, can_focus=True):
                 self._dot_replay()
 
         # multi-key starters
-        elif char in ("d", "c", "y", "r", "g"):
-            if self.read_only and char not in ("y", "g"):
+        elif char in ("d", "c", "y", "r", "g", "e"):
+            if self.read_only and char not in ("y", "g", "e"):
                 self.status_msg = "[readonly]"
             else:
-                if char not in ("y", "g"):
+                if char not in ("y", "g", "e"):
                     self._dot_start(event)
                 self.pending = char
 
@@ -638,7 +682,7 @@ class JsonEditor(Widget, can_focus=True):
         combo = self.pending + char
         self.pending = ""
 
-        if self.read_only and combo not in ("yy", "gg"):
+        if self.read_only and combo not in ("yy", "gg", "ej"):
             self.status_msg = "[readonly]"
             return
 
@@ -704,6 +748,10 @@ class JsonEditor(Widget, can_focus=True):
                     line[: self.cursor_col] + combo[1] + line[self.cursor_col + 1 :]
                 )
             self._dot_stop()
+
+        elif combo == "ej":
+            self._edit_embedded_json()
+
         else:
             self._dot_stop()
             self.status_msg = f"unknown: {combo}"
@@ -878,6 +926,9 @@ class JsonEditor(Widget, can_focus=True):
             verb = verb[:-1]
 
         if verb == "w":
+            if self.read_only:
+                self.status_msg = "[readonly]"
+                return
             content = self.get_content()
             if not force:
                 valid, err = self._check_content(content)
@@ -891,6 +942,10 @@ class JsonEditor(Widget, can_focus=True):
         elif verb == "q":
             self.post_message(self.Quit())
         elif verb in ("wq", "x"):
+            if self.read_only:
+                # read-only: just quit without saving
+                self.post_message(self.Quit())
+                return
             content = self.get_content()
             if not force:
                 valid, err = self._check_content(content)
@@ -913,6 +968,8 @@ class JsonEditor(Widget, can_focus=True):
                 self.status_msg = "[readonly]"
             else:
                 self._format_json()
+        elif verb == "help":
+            self.post_message(self.HelpToggleRequested())
         else:
             self.status_msg = f"unknown command: :{cmd}"
 
@@ -980,6 +1037,84 @@ class JsonEditor(Widget, can_focus=True):
         self.cursor_row = 0
         self.cursor_col = 0
         self.status_msg = "formatted"
+
+    def _find_string_at_cursor(self) -> tuple[int, int, str] | None:
+        """Find the string value at the current cursor position.
+
+        Returns (col_start, col_end, string_content) or None if not on a string.
+        col_start and col_end include the quotes.
+        """
+        line = self.lines[self.cursor_row]
+        col = self.cursor_col
+
+        # Find if we're inside a string
+        in_string = False
+        string_start = -1
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
+                if not in_string:
+                    in_string = True
+                    string_start = i
+                else:
+                    # End of string
+                    if string_start <= col <= i:
+                        # Cursor is in this string
+                        raw = line[string_start + 1 : i]
+                        # Unescape the string
+                        try:
+                            content = json.loads(f'"{raw}"')
+                            return (string_start, i + 1, content)
+                        except json.JSONDecodeError:
+                            return None
+                    in_string = False
+                    string_start = -1
+            i += 1
+        return None
+
+    def _edit_embedded_json(self) -> None:
+        """Handle :ej command to edit embedded JSON string."""
+        result = self._find_string_at_cursor()
+        if result is None:
+            self.status_msg = "cursor not on a string value"
+            return
+
+        col_start, col_end, content = result
+
+        # Try to parse as JSON
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            self.status_msg = "string is not valid JSON"
+            return
+
+        # Check if it's a list or dict
+        if not isinstance(parsed, (list, dict)):
+            self.status_msg = "string is not a list or dict"
+            return
+
+        # Format and send for editing
+        formatted = json.dumps(parsed, indent=4, ensure_ascii=False)
+        self.post_message(
+            self.EmbeddedEditRequested(
+                content=formatted,
+                source_row=self.cursor_row,
+                source_col_start=col_start,
+                source_col_end=col_end,
+            )
+        )
+
+    def update_embedded_string(
+        self, row: int, col_start: int, col_end: int, new_content: str
+    ) -> None:
+        """Update a string value with new JSON content."""
+        self._save_undo()
+        # Escape the new content as a JSON string
+        escaped = json.dumps(new_content, ensure_ascii=False)
+        line = self.lines[row]
+        self.lines[row] = line[:col_start] + escaped + line[col_end:]
+        self.refresh()
 
     # -- JSONL helpers -----------------------------------------------------
 
@@ -1154,8 +1289,26 @@ class JsonEditor(Widget, can_focus=True):
         if not self.undo_stack:
             self.status_msg = "nothing to undo"
             return
+        # Save current state for redo
+        self.redo_stack.append(
+            ([line for line in self.lines], self.cursor_row, self.cursor_col)
+        )
         lines, row, col = self.undo_stack.pop()
         self.lines = lines
         self.cursor_row = row
         self.cursor_col = col
         self.status_msg = "undone"
+
+    def _redo(self) -> None:
+        if not self.redo_stack:
+            self.status_msg = "nothing to redo"
+            return
+        # Save current state for undo
+        self.undo_stack.append(
+            ([line for line in self.lines], self.cursor_row, self.cursor_col)
+        )
+        lines, row, col = self.redo_stack.pop()
+        self.lines = lines
+        self.cursor_row = row
+        self.cursor_col = col
+        self.status_msg = "redone"

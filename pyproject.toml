@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jets"
+name = "vj"
 version = "0.1.0"
 description = "JSON Editor in Textual"
 requires-python = ">=3.10"
@@ -20,10 +20,10 @@ dev = [
 ]
 
 [project.scripts]
-jet = "jet.app:main"
+vj = "vj.app:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jet"]
+packages = ["src/vj"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
