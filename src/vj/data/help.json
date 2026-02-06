@@ -8,6 +8,13 @@
         "PgUp PgDn": "page up/down",
         "Ctrl+d/u": "half page down/up"
     },
+    "Search": {
+        "/": "search forward",
+        "?": "search backward",
+        "n": "next match",
+        "N": "previous match",
+        "\\c \\C": "case insensitive/sensitive"
+    },
     "Insert Mode": {
         "i I": "insert at cursor/line start",
         "a A": "append after cursor/line end",

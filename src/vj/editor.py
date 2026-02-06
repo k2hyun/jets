@@ -18,6 +18,7 @@ class EditorMode(Enum):
     NORMAL = auto()
     INSERT = auto()
     COMMAND = auto()
+    SEARCH = auto()
 
 
 class JsonEditor(Widget, can_focus=True):
@@ -114,6 +115,12 @@ class JsonEditor(Widget, can_focus=True):
         self._dot_buffer: list[tuple[str, str | None]] = []
         self._dot_recording: bool = False
         self._dot_replaying: bool = False
+        # Search state
+        self._search_buffer: str = ""
+        self._search_pattern: str = ""
+        self._search_forward: bool = True  # True for /, False for ?
+        self._search_matches: list[tuple[int, int, int]] = []  # (row, col_start, col_end)
+        self._current_match: int = -1  # Index in _search_matches
 
     # -- Helpers -----------------------------------------------------------
 
@@ -341,6 +348,15 @@ class JsonEditor(Widget, can_focus=True):
             # Pre-compute styles once per line
             line_styles = compute_styles(line)
 
+            # Apply search highlighting
+            if self._search_matches:
+                for mi, (m_row, m_start, m_end) in enumerate(self._search_matches):
+                    if m_row == line_idx:
+                        is_current = mi == self._current_match
+                        style = "black on yellow" if is_current else "black on dark_goldenrod"
+                        for c in range(m_start, min(m_end, line_len)):
+                            line_styles[c] = style
+
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
                     break
@@ -407,6 +423,9 @@ class JsonEditor(Widget, can_focus=True):
 
         if mode == EditorMode.COMMAND:
             result_append(result, f"\n:{self.command_buffer}", style="bold yellow")
+        elif mode == EditorMode.SEARCH:
+            prefix = "/" if self._search_forward else "?"
+            result_append(result, f"\n{prefix}{self._search_buffer}", style="bold magenta")
         else:
             result_append(result, "\n")
 
@@ -422,6 +441,7 @@ class JsonEditor(Widget, can_focus=True):
         EditorMode.NORMAL: "bold white on dark_green",
         EditorMode.INSERT: "bold white on dark_blue",
         EditorMode.COMMAND: "bold white on dark_red",
+        EditorMode.SEARCH: "bold white on dark_magenta",
     }
 
     def _compute_line_styles(self, line: str) -> list[str]:
@@ -497,6 +517,8 @@ class JsonEditor(Widget, can_focus=True):
             self._handle_insert(event)
         elif self._mode == EditorMode.COMMAND:
             self._handle_command(event)
+        elif self._mode == EditorMode.SEARCH:
+            self._handle_search(event)
 
         self._clamp_cursor()
         self.refresh()
@@ -667,6 +689,22 @@ class JsonEditor(Widget, can_focus=True):
                 if char not in ("y", "g", "e"):
                     self._dot_start(event)
                 self.pending = char
+
+        # search mode
+        elif char == "/":
+            self._mode = EditorMode.SEARCH
+            self._search_buffer = ""
+            self._search_forward = True
+            self.status_msg = ""
+        elif char == "?":
+            self._mode = EditorMode.SEARCH
+            self._search_buffer = ""
+            self._search_forward = False
+            self.status_msg = ""
+        elif char == "n":
+            self._goto_next_match()
+        elif char == "N":
+            self._goto_prev_match()
 
         # command mode
         elif char == ":":
@@ -979,6 +1017,155 @@ class JsonEditor(Widget, can_focus=True):
             self.post_message(self.HelpToggleRequested())
         else:
             self.status_msg = f"unknown command: :{cmd}"
+
+    # -- SEARCH ------------------------------------------------------------
+
+    def _handle_search(self, event: events.Key) -> None:
+        key = event.key
+        char = event.character
+
+        if key == "escape":
+            self._mode = EditorMode.NORMAL
+            self._search_buffer = ""
+            self.status_msg = ""
+            return
+
+        if key == "enter":
+            if self._search_buffer:
+                self._execute_search()
+            self._mode = EditorMode.NORMAL
+            return
+
+        if key == "backspace":
+            if self._search_buffer:
+                self._search_buffer = self._search_buffer[:-1]
+            else:
+                self._mode = EditorMode.NORMAL
+            return
+
+        if char and char.isprintable():
+            self._search_buffer += char
+
+    def _execute_search(self) -> None:
+        """Execute search and find all matches."""
+        import re
+
+        pattern = self._search_buffer
+        self._search_pattern = pattern
+
+        # Check for case sensitivity flags
+        flags = 0
+        if pattern.endswith("\\c"):
+            pattern = pattern[:-2]
+            flags = re.IGNORECASE
+        elif pattern.endswith("\\C"):
+            pattern = pattern[:-2]
+        elif pattern.islower():
+            # Smart case: case insensitive if all lowercase
+            flags = re.IGNORECASE
+
+        self._search_matches = []
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            self.status_msg = f"Invalid pattern: {e}"
+            return
+
+        # Find all matches
+        for row, line in enumerate(self.lines):
+            for match in regex.finditer(line):
+                self._search_matches.append((row, match.start(), match.end()))
+
+        if not self._search_matches:
+            self.status_msg = f"Pattern not found: {self._search_pattern}"
+            self._current_match = -1
+            return
+
+        # Find the first match after cursor (for forward) or before cursor (for backward)
+        self._current_match = self._find_match_near_cursor()
+        self._goto_current_match()
+
+    def _find_match_near_cursor(self) -> int:
+        """Find the index of the match nearest to cursor in search direction."""
+        if not self._search_matches:
+            return -1
+
+        cursor_pos = (self.cursor_row, self.cursor_col)
+
+        if self._search_forward:
+            # Find first match at or after cursor
+            for i, (row, col_start, _) in enumerate(self._search_matches):
+                if (row, col_start) >= cursor_pos:
+                    return i
+            # Wrap around to beginning
+            return 0
+        else:
+            # Find last match at or before cursor
+            for i in range(len(self._search_matches) - 1, -1, -1):
+                row, col_start, _ = self._search_matches[i]
+                if (row, col_start) <= cursor_pos:
+                    return i
+            # Wrap around to end
+            return len(self._search_matches) - 1
+
+    def _goto_current_match(self) -> None:
+        """Move cursor to the current match and update status."""
+        if not self._search_matches or self._current_match < 0:
+            return
+
+        row, col_start, _ = self._search_matches[self._current_match]
+        self.cursor_row = row
+        self.cursor_col = col_start
+        total = len(self._search_matches)
+        self.status_msg = f"/{self._search_pattern}  [{self._current_match + 1}/{total}]"
+
+    def _goto_next_match(self) -> None:
+        """Go to the next search match."""
+        if not self._search_matches:
+            if self._search_pattern:
+                self.status_msg = f"Pattern not found: {self._search_pattern}"
+            else:
+                self.status_msg = "No previous search"
+            return
+
+        # Move cursor slightly forward to avoid staying on current match
+        self.cursor_col += 1
+        self._current_match = self._find_match_near_cursor()
+        self._goto_current_match()
+
+    def _goto_prev_match(self) -> None:
+        """Go to the previous search match."""
+        if not self._search_matches:
+            if self._search_pattern:
+                self.status_msg = f"Pattern not found: {self._search_pattern}"
+            else:
+                self.status_msg = "No previous search"
+            return
+
+        # Move cursor slightly backward to avoid staying on current match
+        self.cursor_col -= 1
+        if self.cursor_col < 0:
+            self.cursor_row -= 1
+            if self.cursor_row < 0:
+                self.cursor_row = len(self.lines) - 1
+            self.cursor_col = len(self.lines[self.cursor_row])
+
+        # Find match before cursor
+        cursor_pos = (self.cursor_row, self.cursor_col)
+        found = -1
+        for i in range(len(self._search_matches) - 1, -1, -1):
+            row, col_start, _ = self._search_matches[i]
+            if (row, col_start) <= cursor_pos:
+                found = i
+                break
+
+        if found >= 0:
+            self._current_match = found
+        else:
+            # Wrap around to last match
+            self._current_match = len(self._search_matches) - 1
+
+        self._goto_current_match()
 
     # -- JSON operations ---------------------------------------------------
 
