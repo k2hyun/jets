@@ -120,12 +120,30 @@ class JsonEditor(Widget, can_focus=True):
         self._search_pattern: str = ""
         self._search_forward: bool = True  # True for /, False for ?
         self._search_matches: list[tuple[int, int, int]] = []  # (row, col_start, col_end)
+        self._search_match_by_row: dict[int, list[tuple[int, int, int]]] = {}  # Fast lookup
         self._current_match: int = -1  # Index in _search_matches
         self._search_history: list[str] = []  # Previous search patterns
         self._search_history_idx: int = -1  # Current position in history (-1 = new search)
         self._search_history_max: int = 50  # Max history size
+        # Render caches
+        self._style_cache: dict[int, list[str]] = {}
+        self._content_hash: int = 0
+        self._jsonl_records_cache: list[int] | None = None
+        self._char_width_cache: dict[str, int] = {}
 
     # -- Helpers -----------------------------------------------------------
+
+    def _invalidate_caches(self) -> None:
+        """Invalidate render caches when content changes."""
+        self._style_cache.clear()
+        self._jsonl_records_cache = None
+        self._content_hash = hash(tuple(self.lines))
+
+    def _check_readonly(self) -> bool:
+        """Check if read-only and set status. Returns True if read-only."""
+        if self.read_only:
+            self.status_msg = "[readonly]"
+        return self.read_only
 
     def _dot_start(self, event) -> None:
         """Begin recording a new edit sequence for dot-repeat."""
@@ -160,6 +178,7 @@ class JsonEditor(Widget, can_focus=True):
         # Clear redo stack on new edit
         if self.redo_stack:
             self.redo_stack.clear()
+        self._invalidate_caches()
 
     def _clamp_cursor(self) -> None:
         self.cursor_row = max(0, min(self.cursor_row, len(self.lines) - 1))
@@ -170,12 +189,15 @@ class JsonEditor(Widget, can_focus=True):
             max_col = line_len
         self.cursor_col = max(0, min(self.cursor_col, max_col))
 
-    @staticmethod
-    def _char_width(ch: str) -> int:
+    def _char_width(self, ch: str) -> int:
         """Return display width of a character (2 for fullwidth/wide)."""
         if ch < "\u0100":
             return 1
-        return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        w = self._char_width_cache.get(ch)
+        if w is None:
+            w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            self._char_width_cache[ch] = w
+        return w
 
     def _make_segments(self, line: str, avail: int) -> list[tuple[int, int]]:
         """Break *line* into segments fitting within *avail* display columns."""
@@ -301,6 +323,7 @@ class JsonEditor(Widget, can_focus=True):
         self.lines = content.split("\n") if content else [""]
         self.cursor_row = 0
         self.cursor_col = 0
+        self._invalidate_caches()
         self.refresh()
 
     # =====================================================================
@@ -316,7 +339,13 @@ class JsonEditor(Widget, can_focus=True):
         content_height = height - 2
         ln_width, rec_width, prefix_w = self._gutter_widths()
         avail = max(1, width - prefix_w)
-        jsonl_records = self._jsonl_line_records() if self.jsonl else None
+        # Use cached JSONL records
+        if self.jsonl:
+            if self._jsonl_records_cache is None:
+                self._jsonl_records_cache = self._jsonl_line_records()
+            jsonl_records = self._jsonl_records_cache
+        else:
+            jsonl_records = None
 
         self._ensure_cursor_visible(avail)
 
@@ -326,7 +355,9 @@ class JsonEditor(Widget, can_focus=True):
         cursor_col = self.cursor_col
         make_segments = self._make_segments
         char_width = self._char_width
+        style_cache = self._style_cache
         compute_styles = self._compute_line_styles
+        search_by_row = self._search_match_by_row
         result_append = Text.append
 
         result = Text()
@@ -364,17 +395,20 @@ class JsonEditor(Widget, can_focus=True):
                 if last_w + 1 > avail:
                     segs.append((line_len, line_len))
 
-            # Pre-compute styles once per line
-            line_styles = compute_styles(line)
+            # Use cached styles or compute
+            if line_idx in style_cache:
+                line_styles = style_cache[line_idx][:]  # Copy to avoid mutation
+            else:
+                line_styles = compute_styles(line)
+                style_cache[line_idx] = line_styles[:]
 
-            # Apply search highlighting
-            if self._search_matches:
-                for mi, (m_row, m_start, m_end) in enumerate(self._search_matches):
-                    if m_row == line_idx:
-                        is_current = mi == self._current_match
-                        style = "black on yellow" if is_current else "black on dark_goldenrod"
-                        for c in range(m_start, min(m_end, line_len)):
-                            line_styles[c] = style
+            # Apply search highlighting using indexed lookup
+            if search_by_row and line_idx in search_by_row:
+                for m_start, m_end, mi in search_by_row[line_idx]:
+                    is_current = mi == self._current_match
+                    style = "black on yellow" if is_current else "black on dark_goldenrod"
+                    for c in range(m_start, min(m_end, line_len)):
+                        line_styles[c] = style
 
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
@@ -462,6 +496,8 @@ class JsonEditor(Widget, can_focus=True):
         EditorMode.COMMAND: "bold white on dark_red",
         EditorMode.SEARCH: "bold white on dark_magenta",
     }
+    _BRACKET_PAIRS = {"{": "}", "[": "]", "(": ")"}
+    _BRACKET_PAIRS_REV = {"}": "{", "]": "[", ")": "("}
 
     def _compute_line_styles(self, line: str) -> list[str]:
         """Compute syntax highlight styles for every character in *line*."""
@@ -1109,6 +1145,14 @@ class JsonEditor(Widget, can_focus=True):
             self._search_history_idx = -1
             self._search_buffer = ""
 
+    def _build_search_row_index(self) -> None:
+        """Build row-indexed lookup for search matches."""
+        self._search_match_by_row = {}
+        for mi, (row, start, end) in enumerate(self._search_matches):
+            if row not in self._search_match_by_row:
+                self._search_match_by_row[row] = []
+            self._search_match_by_row[row].append((start, end, mi))
+
     def _execute_search(self) -> None:
         """Execute search and find all matches."""
         import re
@@ -1146,6 +1190,7 @@ class JsonEditor(Widget, can_focus=True):
         for row, line in enumerate(self.lines):
             for match in regex.finditer(line):
                 self._search_matches.append((row, match.start(), match.end()))
+        self._build_search_row_index()
 
         if not self._search_matches:
             self.status_msg = f"Pattern not found: {self._search_pattern}"
@@ -1180,6 +1225,7 @@ class JsonEditor(Widget, can_focus=True):
         if not results:
             self.status_msg = f"JSONPath not found: {path}"
             self._search_matches = []
+            self._search_match_by_row = {}
             self._current_match = -1
             return
 
@@ -1192,6 +1238,7 @@ class JsonEditor(Widget, can_focus=True):
             pos = self._find_json_value_position_fast(data, json_path, key_index)
             if pos:
                 self._search_matches.append(pos)
+        self._build_search_row_index()
 
         if not self._search_matches:
             self.status_msg = f"JSONPath matched but positions not found"
@@ -1236,6 +1283,7 @@ class JsonEditor(Widget, can_focus=True):
         if not all_results:
             self.status_msg = f"JSONPath not found: {path}"
             self._search_matches = []
+            self._search_match_by_row = {}
             self._current_match = -1
             return
 
@@ -1249,6 +1297,7 @@ class JsonEditor(Widget, can_focus=True):
             pos = self._find_json_value_position_fast(data, json_path, key_index, start_line)
             if pos:
                 self._search_matches.append(pos)
+        self._build_search_row_index()
 
         if not self._search_matches:
             self.status_msg = f"JSONPath matched but positions not found"
@@ -1843,12 +1892,10 @@ class JsonEditor(Widget, can_focus=True):
         if self.cursor_col >= len(line):
             return
         ch = line[self.cursor_col]
-        pairs = {"{": "}", "[": "]", "(": ")"}
-        rpairs = {v: k for k, v in pairs.items()}
-        if ch in pairs:
-            self._search_bracket_forward(ch, pairs[ch])
-        elif ch in rpairs:
-            self._search_bracket_backward(ch, rpairs[ch])
+        if ch in self._BRACKET_PAIRS:
+            self._search_bracket_forward(ch, self._BRACKET_PAIRS[ch])
+        elif ch in self._BRACKET_PAIRS_REV:
+            self._search_bracket_backward(ch, self._BRACKET_PAIRS_REV[ch])
 
     def _search_bracket_forward(self, open_ch: str, close_ch: str) -> None:
         depth = 1
