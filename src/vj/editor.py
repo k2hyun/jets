@@ -121,6 +121,9 @@ class JsonEditor(Widget, can_focus=True):
         self._search_forward: bool = True  # True for /, False for ?
         self._search_matches: list[tuple[int, int, int]] = []  # (row, col_start, col_end)
         self._current_match: int = -1  # Index in _search_matches
+        self._search_history: list[str] = []  # Previous search patterns
+        self._search_history_idx: int = -1  # Current position in history (-1 = new search)
+        self._search_history_max: int = 50  # Max history size
 
     # -- Helpers -----------------------------------------------------------
 
@@ -1027,24 +1030,68 @@ class JsonEditor(Widget, can_focus=True):
         if key == "escape":
             self._mode = EditorMode.NORMAL
             self._search_buffer = ""
+            self._search_history_idx = -1
             self.status_msg = ""
             return
 
         if key == "enter":
             if self._search_buffer:
+                self._add_to_search_history(self._search_buffer)
                 self._execute_search()
             self._mode = EditorMode.NORMAL
+            self._search_history_idx = -1
             return
 
         if key == "backspace":
             if self._search_buffer:
                 self._search_buffer = self._search_buffer[:-1]
+                self._search_history_idx = -1  # Reset history navigation on edit
             else:
                 self._mode = EditorMode.NORMAL
+                self._search_history_idx = -1
+            return
+
+        # History navigation
+        if key == "up":
+            self._search_history_prev()
+            return
+        if key == "down":
+            self._search_history_next()
             return
 
         if char and char.isprintable():
             self._search_buffer += char
+            self._search_history_idx = -1  # Reset history navigation on edit
+
+    def _add_to_search_history(self, pattern: str) -> None:
+        """Add pattern to search history, avoiding duplicates."""
+        if not pattern:
+            return
+        # Remove if already exists (to move to front)
+        if pattern in self._search_history:
+            self._search_history.remove(pattern)
+        # Add to front
+        self._search_history.insert(0, pattern)
+        # Trim to max size
+        if len(self._search_history) > self._search_history_max:
+            self._search_history.pop()
+
+    def _search_history_prev(self) -> None:
+        """Navigate to previous search in history."""
+        if not self._search_history:
+            return
+        if self._search_history_idx < len(self._search_history) - 1:
+            self._search_history_idx += 1
+            self._search_buffer = self._search_history[self._search_history_idx]
+
+    def _search_history_next(self) -> None:
+        """Navigate to next search in history."""
+        if self._search_history_idx > 0:
+            self._search_history_idx -= 1
+            self._search_buffer = self._search_history[self._search_history_idx]
+        elif self._search_history_idx == 0:
+            self._search_history_idx = -1
+            self._search_buffer = ""
 
     def _execute_search(self) -> None:
         """Execute search and find all matches."""
@@ -1052,6 +1099,11 @@ class JsonEditor(Widget, can_focus=True):
 
         pattern = self._search_buffer
         self._search_pattern = pattern
+
+        # Check for JSONPath flag
+        if pattern.endswith("\\j"):
+            self._execute_jsonpath_search(pattern[:-2])
+            return
 
         # Check for case sensitivity flags
         flags = 0
@@ -1084,6 +1136,379 @@ class JsonEditor(Widget, can_focus=True):
         # Find the first match after cursor (for forward) or before cursor (for backward)
         self._current_match = self._find_match_near_cursor()
         self._goto_current_match()
+
+    def _execute_jsonpath_search(self, path: str) -> None:
+        """Execute JSONPath search and find all matches."""
+        # JSONL mode: search in each record separately
+        if self.jsonl:
+            self._execute_jsonpath_search_jsonl(path)
+            return
+
+        content = self.get_content()
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            self.status_msg = f"Invalid JSON: {e.msg} (line {e.lineno})"
+            return
+
+        # Parse and execute JSONPath
+        try:
+            results = self._jsonpath_find(data, path)
+        except ValueError as e:
+            self.status_msg = f"Invalid JSONPath: {e}"
+            return
+
+        if not results:
+            self.status_msg = f"JSONPath not found: {path}"
+            self._search_matches = []
+            self._current_match = -1
+            return
+
+        # Build key index once for fast lookup
+        key_index = self._build_key_index()
+
+        # Convert JSONPath results to text positions
+        self._search_matches = []
+        for json_path in results:
+            pos = self._find_json_value_position_fast(data, json_path, key_index)
+            if pos:
+                self._search_matches.append(pos)
+
+        if not self._search_matches:
+            self.status_msg = f"JSONPath matched but positions not found"
+            self._current_match = -1
+            return
+
+        self._current_match = self._find_match_near_cursor()
+        self._goto_current_match()
+
+    def _execute_jsonpath_search_jsonl(self, path: str) -> None:
+        """Execute JSONPath search across JSONL records."""
+        blocks = self._split_jsonl_blocks(self.get_content())
+
+        if not blocks:
+            self.status_msg = "No JSONL records found"
+            self._search_matches = []
+            self._current_match = -1
+            return
+
+        # Pre-compute block start lines once
+        block_start_lines = self._compute_block_start_lines()
+
+        # Find all matches with their block data
+        all_results: list[tuple[int, any, list[str | int]]] = []  # (block_idx, data, path)
+        for block_idx, block in enumerate(blocks):
+            try:
+                data = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+
+            try:
+                results = self._jsonpath_find(data, path)
+                for json_path in results:
+                    all_results.append((block_idx, data, json_path))
+            except ValueError:
+                if block_idx == 0:
+                    self.status_msg = f"Invalid JSONPath: {path}"
+                    self._search_matches = []
+                    self._current_match = -1
+                    return
+
+        if not all_results:
+            self.status_msg = f"JSONPath not found: {path}"
+            self._search_matches = []
+            self._current_match = -1
+            return
+
+        # Build key index once
+        key_index = self._build_key_index()
+
+        # Convert to text positions
+        self._search_matches = []
+        for block_idx, data, json_path in all_results:
+            start_line = block_start_lines.get(block_idx, 0)
+            pos = self._find_json_value_position_fast(data, json_path, key_index, start_line)
+            if pos:
+                self._search_matches.append(pos)
+
+        if not self._search_matches:
+            self.status_msg = f"JSONPath matched but positions not found"
+            self._current_match = -1
+            return
+
+        self._current_match = self._find_match_near_cursor()
+        self._goto_current_match()
+
+    def _build_key_index(self) -> dict[str, list[tuple[int, int]]]:
+        """Build an index of JSON keys to their (row, col) positions."""
+        index: dict[str, list[tuple[int, int]]] = {}
+        for row, line in enumerate(self.lines):
+            col = 0
+            while col < len(line):
+                # Find start of string (potential key)
+                quote_pos = line.find('"', col)
+                if quote_pos == -1:
+                    break
+                # Find end of string
+                end_pos = quote_pos + 1
+                while end_pos < len(line):
+                    if line[end_pos] == '"' and line[end_pos - 1] != '\\':
+                        break
+                    end_pos += 1
+                if end_pos >= len(line):
+                    break
+                # Check if followed by colon (it's a key)
+                after = end_pos + 1
+                while after < len(line) and line[after] in ' \t':
+                    after += 1
+                if after < len(line) and line[after] == ':':
+                    key = line[quote_pos:end_pos + 1]  # Include quotes
+                    if key not in index:
+                        index[key] = []
+                    index[key].append((row, quote_pos))
+                col = end_pos + 1
+        return index
+
+    def _compute_block_start_lines(self) -> dict[int, int]:
+        """Compute the starting line number for each JSONL block."""
+        result: dict[int, int] = {}
+        block_idx = 0
+        in_block = False
+        for i, line in enumerate(self.lines):
+            if line.strip():
+                if not in_block:
+                    result[block_idx] = i
+                    block_idx += 1
+                    in_block = True
+            else:
+                in_block = False
+        return result
+
+    def _find_json_value_position_fast(
+        self,
+        data: any,
+        path: list[str | int],
+        key_index: dict[str, list[tuple[int, int]]],
+        start_line: int = 0,
+    ) -> tuple[int, int, int] | None:
+        """Find text position using pre-built key index."""
+        # Navigate to find the value
+        current = data
+        for key in path:
+            if isinstance(current, dict):
+                if key not in current:
+                    return None
+                current = current[key]
+            elif isinstance(current, list) and isinstance(key, int):
+                if 0 <= key < len(current):
+                    current = current[key]
+                else:
+                    return None
+            else:
+                return None
+
+        is_complex = isinstance(current, (dict, list))
+
+        # Find position using key index
+        if path:
+            last_key = path[-1]
+            if isinstance(last_key, str):
+                key_pattern = json.dumps(last_key, ensure_ascii=False)
+                positions = key_index.get(key_pattern, [])
+
+                # Find the first position at or after start_line
+                for row, col in positions:
+                    if row >= start_line:
+                        if is_complex:
+                            # Highlight the key
+                            return (row, col, col + len(key_pattern))
+                        else:
+                            # Highlight the value
+                            line = self.lines[row]
+                            value_start = col + len(key_pattern)
+                            # Skip ": "
+                            while value_start < len(line) and line[value_start] in ': \t':
+                                value_start += 1
+                            target_str = json.dumps(current, ensure_ascii=False)
+                            if line[value_start:].startswith(target_str):
+                                return (row, value_start, value_start + len(target_str))
+                            # Fallback: find value length by parsing
+                            value_end = self._find_value_end(line, value_start)
+                            if value_end > value_start:
+                                return (row, value_start, value_end)
+                return None
+            else:
+                # Array index - find value directly
+                if is_complex:
+                    return None
+                target_str = json.dumps(current, ensure_ascii=False)
+                for row in range(start_line, len(self.lines)):
+                    line = self.lines[row]
+                    pos = line.find(target_str)
+                    if pos >= 0:
+                        return (row, pos, pos + len(target_str))
+                return None
+        return None
+
+    def _find_value_end(self, line: str, start: int) -> int:
+        """Find the end position of a JSON value starting at start."""
+        if start >= len(line):
+            return start
+        ch = line[start]
+        if ch == '"':
+            # String - find closing quote
+            i = start + 1
+            while i < len(line):
+                if line[i] == '"' and line[i - 1] != '\\':
+                    return i + 1
+                i += 1
+            return len(line)
+        elif ch in '-0123456789':
+            # Number
+            i = start + 1
+            while i < len(line) and line[i] in '0123456789.eE+-':
+                i += 1
+            return i
+        elif line[start:start + 4] == 'true':
+            return start + 4
+        elif line[start:start + 5] == 'false':
+            return start + 5
+        elif line[start:start + 4] == 'null':
+            return start + 4
+        return start
+
+    def _jsonpath_find(self, data: any, path: str) -> list[list[str | int]]:
+        """
+        Simple JSONPath implementation supporting:
+        - $ (root)
+        - .key (child)
+        - [n] (array index)
+        - [*] (wildcard)
+        - .. (recursive descent)
+
+        Returns list of paths (each path is list of keys/indices).
+        """
+        if not path.startswith("$"):
+            raise ValueError("JSONPath must start with $")
+
+        path = path[1:]  # Remove $
+        results: list[list[str | int]] = []
+        self._jsonpath_traverse(data, path, [], results)
+        return results
+
+    def _jsonpath_traverse(
+        self,
+        data: any,
+        remaining_path: str,
+        current_path: list[str | int],
+        results: list[list[str | int]],
+    ) -> None:
+        """Traverse JSON data following the path pattern."""
+        # Base case: no more path to traverse
+        if not remaining_path:
+            results.append(current_path.copy())
+            return
+
+        # Handle recursive descent (..)
+        if remaining_path.startswith(".."):
+            rest = remaining_path[2:]
+            # Extract next key/pattern
+            next_key, after = self._jsonpath_next_segment(rest)
+            if next_key is not None:
+                # Search recursively
+                self._jsonpath_recursive_descent(data, next_key, after, current_path, results)
+            return
+
+        # Handle dot notation (.key)
+        if remaining_path.startswith("."):
+            rest = remaining_path[1:]
+            key, after = self._jsonpath_next_segment(rest)
+            if key is None:
+                return
+
+            if key == "*":
+                # Wildcard: match all children
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        self._jsonpath_traverse(v, after, current_path + [k], results)
+                elif isinstance(data, list):
+                    for i, v in enumerate(data):
+                        self._jsonpath_traverse(v, after, current_path + [i], results)
+            elif isinstance(data, dict) and key in data:
+                self._jsonpath_traverse(data[key], after, current_path + [key], results)
+            return
+
+        # Handle bracket notation ([n] or [*])
+        if remaining_path.startswith("["):
+            end = remaining_path.find("]")
+            if end == -1:
+                raise ValueError("Unclosed bracket")
+
+            index_str = remaining_path[1:end]
+            after = remaining_path[end + 1:]
+
+            if index_str == "*":
+                # Wildcard
+                if isinstance(data, list):
+                    for i, v in enumerate(data):
+                        self._jsonpath_traverse(v, after, current_path + [i], results)
+                elif isinstance(data, dict):
+                    for k, v in data.items():
+                        self._jsonpath_traverse(v, after, current_path + [k], results)
+            elif index_str.lstrip("-").isdigit():
+                # Numeric index
+                idx = int(index_str)
+                if isinstance(data, list) and -len(data) <= idx < len(data):
+                    self._jsonpath_traverse(data[idx], after, current_path + [idx], results)
+            else:
+                # String key in brackets
+                key = index_str.strip("'\"")
+                if isinstance(data, dict) and key in data:
+                    self._jsonpath_traverse(data[key], after, current_path + [key], results)
+            return
+
+    def _jsonpath_next_segment(self, path: str) -> tuple[str | None, str]:
+        """Extract the next segment from path. Returns (segment, remaining)."""
+        if not path:
+            return None, ""
+
+        if path.startswith("["):
+            end = path.find("]")
+            if end == -1:
+                return None, path
+            return path[1:end], path[end + 1:]
+
+        if path.startswith("."):
+            return None, path
+
+        # Find end of key (next . or [)
+        end = len(path)
+        for i, ch in enumerate(path):
+            if ch in ".[]":
+                end = i
+                break
+
+        return path[:end], path[end:]
+
+    def _jsonpath_recursive_descent(
+        self,
+        data: any,
+        target_key: str,
+        remaining_path: str,
+        current_path: list[str | int],
+        results: list[list[str | int]],
+    ) -> None:
+        """Recursively search for target_key in data."""
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if target_key == "*" or k == target_key:
+                    self._jsonpath_traverse(v, remaining_path, current_path + [k], results)
+                # Continue descent
+                self._jsonpath_recursive_descent(v, target_key, remaining_path, current_path + [k], results)
+        elif isinstance(data, list):
+            for i, v in enumerate(data):
+                # Continue descent into array elements
+                self._jsonpath_recursive_descent(v, target_key, remaining_path, current_path + [i], results)
 
     def _find_match_near_cursor(self) -> int:
         """Find the index of the match nearest to cursor in search direction."""

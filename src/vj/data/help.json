@@ -13,7 +13,9 @@
         "?": "search backward",
         "n": "next match",
         "N": "previous match",
-        "\\c \\C": "case insensitive/sensitive"
+        "Up/Down": "search history",
+        "\\c \\C": "case insensitive/sensitive",
+        "\\j": "JSONPath search (e.g. /$.key\\j)"
     },
     "Insert Mode": {
         "i I": "insert at cursor/line start",
