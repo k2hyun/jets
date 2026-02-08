@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vim-json-editor"
+name = "jvim"
 version = "0.1.0"
 description = "A modal JSON editor built with Textual, featuring vim-style keybindings"
 readme = "README.md"

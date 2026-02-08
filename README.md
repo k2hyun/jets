@@ -18,7 +18,7 @@
 ## Installation
 
 ```bash
-pip install vim-json-editor
+pip install jvim
 ```
 
 ## Usage
