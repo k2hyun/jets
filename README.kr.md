@@ -1,8 +1,6 @@
-# jets
+# jvim
 
-**J**SON **E**ditor in **T**extual with vim-**S**tyle keybindings.
-
-[Textual](https://github.com/Textualize/textual) 기반의 vim 스타일 모달 JSON 편집기입니다.
+[Textual](https://github.com/Textualize/textual) 기반의 vim 스타일 JSON 편집기입니다.
 
 ## 주요 기능
 
@@ -25,14 +23,16 @@ pip install jvim
 
 ```bash
 # 파일 열기
-vj data.json
+jvim data.json
 
 # 읽기 전용 모드로 열기
-vj -R data.json
+jvim -R data.json
 
 # 새 파일 생성
-vj newfile.json
+jvim newfile.json
 ```
+
+`jvi`, `jv` 단축 명령도 사용 가능합니다.
 
 ## JSONL 지원
 

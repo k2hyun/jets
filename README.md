@@ -1,6 +1,6 @@
-# jets
+# jvim
 
-**J**SON **E**ditor in **T**extual with vim-**S**tyle keybindings.
+JSON editor with vim-style keybindings, built with [Textual](https://github.com/Textualize/textual).
 
 [한국어](README.kr.md)
 
@@ -25,14 +25,16 @@ pip install jvim
 
 ```bash
 # Open a file
-vj data.json
+jvim data.json
 
 # Open in read-only mode
-vj -R data.json
+jvim -R data.json
 
 # Create new file
-vj newfile.json
+jvim newfile.json
 ```
+
+Also available as `jvi` and `jv` shortcuts.
 
 ## JSONL Support
 

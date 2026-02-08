@@ -295,8 +295,8 @@ class JsonEditorApp(App):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="vj",
-        description="JSON Editor in Textual",
+        prog="jvim",
+        description="JSON editor with vim-style keybindings",
     )
     parser.add_argument(
         "file",
@@ -325,7 +325,7 @@ def main() -> None:
                 # New file — start with empty object / empty line
                 initial_content = "" if jsonl else "{}"
         except PermissionError as exc:
-            print(f"vj: {exc}", file=sys.stderr)
+            print(f"jvim: {exc}", file=sys.stderr)
             sys.exit(1)
 
     app = JsonEditorApp(
