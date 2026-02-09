@@ -627,3 +627,68 @@ class TestHistory:
 
         editor._command_history_next()
         assert editor.command_buffer == ""
+
+
+class TestLineJump:
+    """Tests for line jump positioning cursor at top."""
+
+    def test_scroll_cursor_to_top(self):
+        """_scroll_cursor_to_top sets scroll_top to cursor_row."""
+        content = "\n".join([f"line {i}" for i in range(100)])
+        editor = JsonEditor(content)
+
+        editor.cursor_row = 50
+        editor._scroll_cursor_to_top()
+
+        assert editor._scroll_top == 50
+
+    def test_line_jump_command_scrolls_to_top(self):
+        """Line number command (e.g., :50) positions cursor at top."""
+        content = "\n".join([f"line {i}" for i in range(100)])
+        editor = JsonEditor(content)
+        editor._scroll_top = 0
+
+        editor._exec_command("50")
+
+        assert editor.cursor_row == 49  # 0-indexed
+        assert editor._scroll_top == 49  # Cursor at top
+
+    def test_line_jump_G_scrolls_to_top(self):
+        """G command positions last line at top."""
+        content = "\n".join([f"line {i}" for i in range(100)])
+        editor = JsonEditor(content)
+
+        from types import SimpleNamespace
+        event = SimpleNamespace(key="g", character="G")
+        editor._handle_normal(event)
+
+        assert editor.cursor_row == 99  # Last line
+        assert editor._scroll_top == 99  # Cursor at top
+
+    def test_line_jump_gg_scrolls_to_top(self):
+        """gg command positions first line at top."""
+        content = "\n".join([f"line {i}" for i in range(100)])
+        editor = JsonEditor(content)
+        editor.cursor_row = 50
+        editor._scroll_top = 50
+
+        from types import SimpleNamespace
+        # First 'g' to set pending
+        event1 = SimpleNamespace(key="g", character="g")
+        editor._handle_normal(event1)
+        # Second 'g' to complete
+        event2 = SimpleNamespace(key="g", character="g")
+        editor._handle_normal(event2)
+
+        assert editor.cursor_row == 0
+        assert editor._scroll_top == 0
+
+    def test_line_jump_dollar_scrolls_to_top(self):
+        """:$ command positions last line at top."""
+        content = "\n".join([f"line {i}" for i in range(100)])
+        editor = JsonEditor(content)
+
+        editor._exec_command("$")
+
+        assert editor.cursor_row == 99
+        assert editor._scroll_top == 99

@@ -327,6 +327,10 @@ class JsonEditor(Widget, can_focus=True):
                 else:
                     vh = self._visible_height()
 
+    def _scroll_cursor_to_top(self) -> None:
+        """Position viewport so cursor is at the top of the screen."""
+        self._scroll_top = self.cursor_row
+
     # -- Public API --------------------------------------------------------
 
     def get_content(self) -> str:
@@ -656,6 +660,7 @@ class JsonEditor(Widget, can_focus=True):
             self.cursor_col = len(line) - len(line.lstrip())
         elif char == "G":
             self.cursor_row = len(self.lines) - 1
+            self._scroll_cursor_to_top()
         elif char == "%":
             self._jump_matching_bracket()
         elif key == "pagedown" or key == "ctrl+f":
@@ -875,6 +880,7 @@ class JsonEditor(Widget, can_focus=True):
         elif combo == "gg":
             self.cursor_row = 0
             self.cursor_col = 0
+            self._scroll_cursor_to_top()
 
         elif len(combo) == 2 and combo[0] == "r":
             self._save_undo()
@@ -1073,6 +1079,7 @@ class JsonEditor(Widget, can_focus=True):
         if stripped == "$":
             self.cursor_row = len(self.lines) - 1
             self.cursor_col = 0
+            self._scroll_cursor_to_top()
             return
 
         # Line jump: :l<num> → editor line; :<num> or :p<num> → file line (JSONL record)
@@ -1080,6 +1087,7 @@ class JsonEditor(Widget, can_focus=True):
             num = int(stripped[1:])
             self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
             self.cursor_col = 0
+            self._scroll_cursor_to_top()
             return
         if stripped.isdigit() or (len(stripped) > 1 and stripped[0] == "p" and stripped[1:].isdigit()):
             num = int(stripped if stripped.isdigit() else stripped[1:])
@@ -1089,11 +1097,13 @@ class JsonEditor(Widget, can_focus=True):
                     if rec == num:
                         self.cursor_row = i
                         self.cursor_col = 0
+                        self._scroll_cursor_to_top()
                         return
                 self.status_msg = f"record {num} not found"
                 return
             self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
             self.cursor_col = 0
+            self._scroll_cursor_to_top()
             return
 
         parts = cmd.split(None, 1)
