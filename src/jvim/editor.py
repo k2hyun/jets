@@ -137,7 +137,6 @@ class JsonEditor(Widget, can_focus=True):
         """Invalidate render caches when content changes."""
         self._style_cache.clear()
         self._jsonl_records_cache = None
-        self._content_hash = hash(tuple(self.lines))
 
     def _check_readonly(self) -> bool:
         """Check if read-only and set status. Returns True if read-only."""
@@ -347,6 +346,14 @@ class JsonEditor(Widget, can_focus=True):
         height = self.content_region.height
         if height < 3 or width < 10:
             return Text("(too small)")
+
+        # Auto-invalidate caches if content changed (safety net)
+        if self._style_cache:
+            current_hash = hash(tuple(self.lines))
+            if current_hash != self._content_hash:
+                self._style_cache.clear()
+                self._jsonl_records_cache = None
+                self._content_hash = current_hash
 
         content_height = height - 2
         ln_width, rec_width, prefix_w = self._gutter_widths()
@@ -1816,7 +1823,6 @@ class JsonEditor(Widget, can_focus=True):
         escaped = json.dumps(new_content, ensure_ascii=False)
         line = self.lines[row]
         self.lines[row] = line[:col_start] + escaped + line[col_end:]
-        self._invalidate_caches()
         self.refresh()
 
     # -- JSONL helpers -----------------------------------------------------
@@ -1991,13 +1997,12 @@ class JsonEditor(Widget, can_focus=True):
             self.status_msg = "nothing to undo"
             return
         # Save current state for redo
-        self.redo_stack.append(
-            ([line for line in self.lines], self.cursor_row, self.cursor_col)
-        )
+        self.redo_stack.append((self.lines[:], self.cursor_row, self.cursor_col))
         lines, row, col = self.undo_stack.pop()
         self.lines = lines
         self.cursor_row = row
         self.cursor_col = col
+        self._invalidate_caches()
         self.status_msg = "undone"
 
     def _redo(self) -> None:
@@ -2005,11 +2010,10 @@ class JsonEditor(Widget, can_focus=True):
             self.status_msg = "nothing to redo"
             return
         # Save current state for undo
-        self.undo_stack.append(
-            ([line for line in self.lines], self.cursor_row, self.cursor_col)
-        )
+        self.undo_stack.append((self.lines[:], self.cursor_row, self.cursor_col))
         lines, row, col = self.redo_stack.pop()
         self.lines = lines
         self.cursor_row = row
         self.cursor_col = col
+        self._invalidate_caches()
         self.status_msg = "redone"
