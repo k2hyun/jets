@@ -112,6 +112,10 @@ You can filter search results by value using comparison operators:
 | `\c` | Case insensitive (for regex text search) |
 | `\C` | Case sensitive (for regex text search) |
 
+### History
+
+Search and command history is automatically saved to `~/.jvim/history.json` and restored on next launch. Use arrow keys (`↑`/`↓`) to navigate history in search (`/`) and command (`:`) modes.
+
 ## Embedded JSON Editing
 
 JSON files often contain escaped JSON strings as values. jvim lets you edit these nested JSON structures naturally.

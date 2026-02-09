@@ -559,3 +559,71 @@ class TestJsonPathFilter:
         editor._execute_search()
 
         assert len(editor._search_matches) == 1
+
+
+class TestHistory:
+    """Tests for command and search history."""
+
+    def test_get_history(self):
+        editor = JsonEditor()
+        editor._search_history = ["pattern1", "pattern2"]
+        editor._command_history = ["w", "q"]
+
+        history = editor.get_history()
+
+        assert history["search"] == ["pattern1", "pattern2"]
+        assert history["command"] == ["w", "q"]
+
+    def test_set_history(self):
+        editor = JsonEditor()
+        history = {
+            "search": ["foo", "bar"],
+            "command": ["fmt", "w"],
+        }
+
+        editor.set_history(history)
+
+        assert editor._search_history == ["foo", "bar"]
+        assert editor._command_history == ["fmt", "w"]
+
+    def test_set_history_partial(self):
+        editor = JsonEditor()
+        editor._search_history = ["old"]
+        editor._command_history = ["old_cmd"]
+
+        editor.set_history({"search": ["new"]})
+
+        assert editor._search_history == ["new"]
+        assert editor._command_history == ["old_cmd"]
+
+    def test_add_to_command_history(self):
+        editor = JsonEditor()
+
+        editor._add_to_command_history("fmt")
+        editor._add_to_command_history("w")
+
+        assert editor._command_history == ["w", "fmt"]
+
+    def test_add_to_command_history_no_duplicates(self):
+        editor = JsonEditor()
+        editor._command_history = ["w", "fmt"]
+
+        editor._add_to_command_history("w")
+
+        assert editor._command_history == ["w", "fmt"]
+
+    def test_command_history_navigation(self):
+        editor = JsonEditor()
+        editor._command_history = ["c", "b", "a"]
+
+        editor._command_history_prev()
+        assert editor.command_buffer == "c"
+
+        editor._command_history_prev()
+        assert editor.command_buffer == "b"
+
+        editor._command_history_next()
+        assert editor.command_buffer == "c"
+
+        editor._command_history_next()
+        assert editor.command_buffer == ""

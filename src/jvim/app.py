@@ -15,11 +15,36 @@ from .editor import JsonEditor
 
 # Data directory path
 _DATA_DIR = Path(__file__).parent / "data"
+# Config directory and history file
+_CONFIG_DIR = Path.home() / ".jvim"
+_HISTORY_FILE = _CONFIG_DIR / "history.json"
 
 
 def _load_data(filename: str) -> str:
     """Load content from data directory."""
     return (_DATA_DIR / filename).read_text(encoding="utf-8")
+
+
+def _load_history() -> dict:
+    """Load command/search history from file."""
+    try:
+        if _HISTORY_FILE.exists():
+            return json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _save_history(history: dict) -> None:
+    """Save command/search history to file."""
+    try:
+        _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _HISTORY_FILE.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # Silently fail if we can't write history
 
 
 class JsonEditorApp(App):
@@ -68,6 +93,9 @@ class JsonEditorApp(App):
 
     def on_mount(self) -> None:
         self._update_title()
+        # Load history
+        history = _load_history()
+        self.query_one("#editor", JsonEditor).set_history(history)
         self.query_one("#editor").focus()
 
     def _update_title(self) -> None:
@@ -76,6 +104,12 @@ class JsonEditorApp(App):
             self.sub_title = self.file_path + ro
         else:
             self.sub_title = "[new]" + ro
+
+    def _save_and_exit(self) -> None:
+        """Save history and exit the app."""
+        editor = self.query_one("#editor", JsonEditor)
+        _save_history(editor.get_history())
+        self.exit()
 
     # -- Event handlers ----------------------------------------------------
 
@@ -102,7 +136,7 @@ class JsonEditorApp(App):
             else:
                 self._close_ej_panel()
         else:
-            self.exit()
+            self._save_and_exit()
 
     def on_json_editor_force_quit(self, event: JsonEditor.ForceQuit) -> None:
         """Handle :q! to discard changes."""
@@ -112,7 +146,7 @@ class JsonEditorApp(App):
         elif self._is_ej_editor_focused():
             self._close_ej_panel()
         else:
-            self.exit()
+            self._save_and_exit()
 
     def on_json_editor_json_validated(
         self, event: JsonEditor.JsonValidated
@@ -178,7 +212,7 @@ class JsonEditorApp(App):
             self._update_title()
             self.notify(f"Saved: {self.file_path}", severity="information")
             if event.quit_after:
-                self.exit()
+                self._save_and_exit()
         except OSError as exc:
             self.notify(f"Save failed: {exc}", severity="error", timeout=6)
 

@@ -125,6 +125,10 @@ class JsonEditor(Widget, can_focus=True):
         self._search_history: list[str] = []  # Previous search patterns
         self._search_history_idx: int = -1  # Current position in history (-1 = new search)
         self._search_history_max: int = 50  # Max history size
+        # Command history
+        self._command_history: list[str] = []  # Previous commands
+        self._command_history_idx: int = -1  # Current position in history
+        self._command_history_max: int = 50  # Max history size
         # Render caches
         self._style_cache: dict[int, list[str]] = {}
         self._content_hash: int = 0
@@ -336,6 +340,20 @@ class JsonEditor(Widget, can_focus=True):
         self.cursor_col = 0
         self._invalidate_caches()
         self.refresh()
+
+    def get_history(self) -> dict:
+        """Get search and command history for persistence."""
+        return {
+            "search": self._search_history[:],
+            "command": self._command_history[:],
+        }
+
+    def set_history(self, history: dict) -> None:
+        """Restore search and command history."""
+        if "search" in history:
+            self._search_history = history["search"][: self._search_history_max]
+        if "command" in history:
+            self._command_history = history["command"][: self._command_history_max]
 
     # =====================================================================
     # Rendering
@@ -985,25 +1003,68 @@ class JsonEditor(Widget, can_focus=True):
         if key == "escape":
             self._mode = EditorMode.NORMAL
             self.command_buffer = ""
+            self._command_history_idx = -1
             self.status_msg = ""
             return
 
         if key == "enter":
-            self._exec_command(self.command_buffer.strip())
+            cmd = self.command_buffer.strip()
+            if cmd:
+                self._add_to_command_history(cmd)
+            self._exec_command(cmd)
             if self._mode == EditorMode.COMMAND:
                 self._mode = EditorMode.NORMAL
             self.command_buffer = ""
+            self._command_history_idx = -1
             return
 
         if key == "backspace":
             if self.command_buffer:
                 self.command_buffer = self.command_buffer[:-1]
+                self._command_history_idx = -1
             else:
                 self._mode = EditorMode.NORMAL
+                self._command_history_idx = -1
+            return
+
+        # History navigation
+        if key == "up":
+            self._command_history_prev()
+            return
+        if key == "down":
+            self._command_history_next()
             return
 
         if char and char.isprintable():
             self.command_buffer += char
+            self._command_history_idx = -1
+
+    def _add_to_command_history(self, cmd: str) -> None:
+        """Add command to history, avoiding duplicates."""
+        if not cmd:
+            return
+        if cmd in self._command_history:
+            self._command_history.remove(cmd)
+        self._command_history.insert(0, cmd)
+        if len(self._command_history) > self._command_history_max:
+            self._command_history.pop()
+
+    def _command_history_prev(self) -> None:
+        """Navigate to previous command in history."""
+        if not self._command_history:
+            return
+        if self._command_history_idx < len(self._command_history) - 1:
+            self._command_history_idx += 1
+            self.command_buffer = self._command_history[self._command_history_idx]
+
+    def _command_history_next(self) -> None:
+        """Navigate to next command in history."""
+        if self._command_history_idx > 0:
+            self._command_history_idx -= 1
+            self.command_buffer = self._command_history[self._command_history_idx]
+        elif self._command_history_idx == 0:
+            self._command_history_idx = -1
+            self.command_buffer = ""
 
     def _exec_command(self, cmd: str) -> None:
         stripped = cmd.strip()
