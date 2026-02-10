@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -131,7 +132,7 @@ class JsonEditor(Widget, can_focus=True):
         self._command_history_max: int = 50  # Max history size
         # Render caches
         self._style_cache: dict[int, list[str]] = {}
-        self._content_hash: int = 0
+        self._cache_dirty: bool = False
         self._jsonl_records_cache: list[int] | None = None
         self._char_width_cache: dict[str, int] = {}
 
@@ -139,8 +140,7 @@ class JsonEditor(Widget, can_focus=True):
 
     def _invalidate_caches(self) -> None:
         """Invalidate render caches when content changes."""
-        self._style_cache.clear()
-        self._jsonl_records_cache = None
+        self._cache_dirty = True
 
     def _check_readonly(self) -> bool:
         """Check if read-only and set status. Returns True if read-only."""
@@ -299,33 +299,32 @@ class JsonEditor(Widget, can_focus=True):
         return max(1, self.content_region.height - 2)
 
     def _ensure_cursor_visible(self, avail: int) -> None:
-        vh = self._visible_height()
-        # Reserve 1 row for JSONL floating header if applicable
-        if self.jsonl and self._scroll_top > 0:
-            jsonl_records = self._jsonl_records_cache
-            if jsonl_records and jsonl_records[self._scroll_top] == 0:
-                vh -= 1
+        base_vh = self._visible_height()
+        jsonl_records = self._jsonl_records_cache if self.jsonl else None
+
+        def _effective_vh(scroll_top: int) -> int:
+            if jsonl_records and scroll_top > 0 and jsonl_records[scroll_top] == 0:
+                return base_vh - 1
+            return base_vh
+
+        vh = _effective_vh(self._scroll_top)
 
         if self.cursor_row < self._scroll_top:
             self._scroll_top = self.cursor_row
 
+        wrap_rows = self._wrap_rows
+        lines = self.lines
         rows_before = sum(
-            self._wrap_rows(self.lines[i], avail)
+            wrap_rows(lines[i], avail)
             for i in range(self._scroll_top, self.cursor_row)
         )
         cursor_dy = self._cursor_wrap_dy(
-            self.lines[self.cursor_row], self.cursor_col, avail
+            lines[self.cursor_row], self.cursor_col, avail
         )
         while rows_before + cursor_dy >= vh and self._scroll_top <= self.cursor_row:
-            rows_before -= self._wrap_rows(self.lines[self._scroll_top], avail)
+            rows_before -= wrap_rows(lines[self._scroll_top], avail)
             self._scroll_top += 1
-            # Re-check floating header after scroll
-            if self.jsonl and self._scroll_top > 0:
-                jsonl_records = self._jsonl_records_cache
-                if jsonl_records and jsonl_records[self._scroll_top] == 0:
-                    vh = self._visible_height() - 1
-                else:
-                    vh = self._visible_height()
+            vh = _effective_vh(self._scroll_top)
 
     def _scroll_cursor_to_top(self) -> None:
         """Position viewport so cursor is at the top of the screen."""
@@ -379,13 +378,11 @@ class JsonEditor(Widget, can_focus=True):
         if height < 3 or width < 10:
             return Text("(too small)")
 
-        # Auto-invalidate caches if content changed (safety net)
-        if self._style_cache:
-            current_hash = hash(tuple(self.lines))
-            if current_hash != self._content_hash:
-                self._style_cache.clear()
-                self._jsonl_records_cache = None
-                self._content_hash = current_hash
+        # Flush caches when content changed
+        if self._cache_dirty:
+            self._style_cache.clear()
+            self._jsonl_records_cache = None
+            self._cache_dirty = False
 
         content_height = height - 2
         ln_width, rec_width, prefix_w = self._gutter_widths()
@@ -415,6 +412,7 @@ class JsonEditor(Widget, can_focus=True):
         rows_used = 0
         line_idx = self._scroll_top
         num_lines = len(lines)
+        gutter_pad = " " * prefix_w  # 래핑된 줄의 거터 공백 (미리 생성)
 
         # Floating header for JSONL: show record start line when scrolled into middle of record
         if self.jsonl and jsonl_records and self._scroll_top > 0:
@@ -448,24 +446,26 @@ class JsonEditor(Widget, can_focus=True):
 
             # Use cached styles or compute
             if line_idx in style_cache:
-                line_styles = style_cache[line_idx][:]  # Copy to avoid mutation
+                line_styles = style_cache[line_idx]
             else:
                 line_styles = compute_styles(line)
-                style_cache[line_idx] = line_styles[:]
+                style_cache[line_idx] = line_styles
 
             # 라인 배경 (diff 하이라이팅 등 서브클래스용 훅)
             line_bg = self._line_background(line_idx)
-            if line_bg:
-                for c in range(len(line_styles)):
-                    line_styles[c] = f"{line_bg} {line_styles[c]}"
-
-            # Apply search highlighting using indexed lookup
-            if search_by_row and line_idx in search_by_row:
-                for m_start, m_end, mi in search_by_row[line_idx]:
-                    is_current = mi == self._current_match
-                    style = "black on yellow" if is_current else "black on dark_goldenrod"
-                    for c in range(m_start, min(m_end, line_len)):
-                        line_styles[c] = style
+            has_search = search_by_row and line_idx in search_by_row
+            # 변이가 필요한 경우에만 복사
+            if line_bg or has_search:
+                line_styles = line_styles[:]
+                if line_bg:
+                    for c in range(len(line_styles)):
+                        line_styles[c] = f"{line_bg} {line_styles[c]}"
+                if has_search:
+                    for m_start, m_end, mi in search_by_row[line_idx]:
+                        is_current = mi == self._current_match
+                        style = "black on yellow" if is_current else "black on dark_goldenrod"
+                        for c in range(m_start, min(m_end, line_len)):
+                            line_styles[c] = style
 
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
@@ -480,7 +480,7 @@ class JsonEditor(Widget, can_focus=True):
                         else:
                             result_append(result, " " * (rec_width + 1))
                 else:
-                    result_append(result, " " * prefix_w)
+                    result_append(result, gutter_pad)
                 # Render segment — batch consecutive chars with same style
                 col = s_start
                 while col < s_end:
@@ -557,6 +557,7 @@ class JsonEditor(Widget, can_focus=True):
     _PUNCT = frozenset(":,")
     _DIGIT = frozenset("0123456789.-+eE")
     _KEYWORDS = ("true", "false", "null")
+    _KEYWORD_RE = re.compile(r"true|false|null")
     _MODE_STYLE = {
         EditorMode.NORMAL: "bold white on dark_green",
         EditorMode.INSERT: "bold white on dark_blue",
@@ -574,7 +575,6 @@ class JsonEditor(Widget, can_focus=True):
 
         # Local references for hot path
         BRACKET = self._BRACKET
-        PUNCT = self._PUNCT
         DIGIT = self._DIGIT
 
         styles = ["white"] * n
@@ -605,20 +605,12 @@ class JsonEditor(Widget, can_focus=True):
                 styles[i] = "yellow"
             # PUNCT stays "white" (default)
 
-        # Keywords outside strings
-        lower = line.lower()
-        for kw in self._KEYWORDS:
-            kw_len = len(kw)
-            start = 0
-            while True:
-                p = lower.find(kw, start)
-                if p == -1:
-                    break
-                end = min(p + kw_len, n)
-                for j in range(p, end):
-                    if not is_in_str[j]:
-                        styles[j] = "magenta"
-                start = p + 1
+        # Keywords outside strings (single regex pass)
+        for m in self._KEYWORD_RE.finditer(line):
+            ms, me = m.start(), m.end()
+            if not is_in_str[ms]:
+                for j in range(ms, me):
+                    styles[j] = "magenta"
 
         return styles
 
@@ -1271,7 +1263,6 @@ class JsonEditor(Widget, can_focus=True):
 
     def _execute_search(self) -> None:
         """Execute search and find all matches."""
-        import re
 
         pattern = self._search_buffer
         self._search_pattern = pattern
@@ -1331,7 +1322,6 @@ class JsonEditor(Widget, can_focus=True):
 
         Returns (path, operator, value) or (path, "", None) if no filter.
         """
-        import re
 
         # Order matters: check longer operators first
         operators = ["!=", ">=", "<=", "~", "=", ">", "<"]
@@ -1375,7 +1365,6 @@ class JsonEditor(Widget, can_focus=True):
 
     def _jsonpath_value_matches(self, actual: any, op: str, expected: any) -> bool:
         """Check if actual value matches the expected value with given operator."""
-        import re
 
         if op == "=" or op == "==":
             return actual == expected
@@ -1479,7 +1468,7 @@ class JsonEditor(Widget, can_focus=True):
         self._build_search_row_index()
 
         if not self._search_matches:
-            self.status_msg = f"JSONPath matched but positions not found"
+            self.status_msg = "JSONPath matched but positions not found"
             self._current_match = -1
             return
 
@@ -1546,7 +1535,7 @@ class JsonEditor(Widget, can_focus=True):
         self._build_search_row_index()
 
         if not self._search_matches:
-            self.status_msg = f"JSONPath matched but positions not found"
+            self.status_msg = "JSONPath matched but positions not found"
             self._current_match = -1
             return
 

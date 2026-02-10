@@ -1,6 +1,5 @@
 """Tests for JsonEditor widget."""
 
-import pytest
 from src.jvim.editor import JsonEditor, EditorMode
 
 
@@ -39,30 +38,28 @@ class TestEditorBasic:
 class TestCacheInvalidation:
     """Tests for cache invalidation - fixes for IndexError bugs."""
 
-    def test_save_undo_clears_cache(self):
-        """_save_undo should clear style cache."""
+    def test_save_undo_marks_dirty(self):
+        """_save_undo should mark cache as dirty."""
         editor = JsonEditor('{"key": "value"}')
         editor._style_cache[0] = ["white"] * 16
         editor._jsonl_records_cache = [1]
 
         editor._save_undo()
 
-        assert editor._style_cache == {}
-        assert editor._jsonl_records_cache is None
+        assert editor._cache_dirty is True
 
-    def test_set_content_clears_cache(self):
-        """set_content should clear caches."""
+    def test_set_content_marks_dirty(self):
+        """set_content should mark cache as dirty."""
         editor = JsonEditor('{"old": "data"}')
         editor._style_cache[0] = ["white"] * 14
         editor._jsonl_records_cache = [1]
 
         editor.set_content('{"new": "data"}')
 
-        assert editor._style_cache == {}
-        assert editor._jsonl_records_cache is None
+        assert editor._cache_dirty is True
 
-    def test_undo_clears_cache(self):
-        """_undo should clear caches after restoring state."""
+    def test_undo_marks_dirty(self):
+        """_undo should mark cache as dirty."""
         editor = JsonEditor('{"key": "value"}')
         editor._save_undo()
         editor.lines = ['{"modified": "data"}']
@@ -70,12 +67,11 @@ class TestCacheInvalidation:
 
         editor._undo()
 
-        assert editor._style_cache == {}
-        assert editor._jsonl_records_cache is None
+        assert editor._cache_dirty is True
         assert editor.lines == ['{"key": "value"}']
 
-    def test_redo_clears_cache(self):
-        """_redo should clear caches after restoring state."""
+    def test_redo_marks_dirty(self):
+        """_redo should mark cache as dirty."""
         editor = JsonEditor('{"key": "value"}')
         editor._save_undo()
         editor.lines = ['{"modified": "data"}']
@@ -84,8 +80,7 @@ class TestCacheInvalidation:
 
         editor._redo()
 
-        assert editor._style_cache == {}
-        assert editor._jsonl_records_cache is None
+        assert editor._cache_dirty is True
         assert editor.lines == ['{"modified": "data"}']
 
     def test_render_auto_invalidation_skips_empty_cache(self):
@@ -196,8 +191,8 @@ class TestEmbeddedJson:
 
         editor.update_embedded_string(0, 9, 25, '{"nested": 2}')
 
-        # Cache should be cleared by _save_undo
-        assert editor._style_cache == {}
+        # Cache should be marked dirty by _save_undo
+        assert editor._cache_dirty is True
 
 
 class TestJsonl:
