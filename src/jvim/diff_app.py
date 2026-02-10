@@ -45,11 +45,11 @@ class DiffEditor(SyncJsonEditor):
 
     # diff 태그별 배경색
     _DIFF_BG = {
-        DiffTag.DELETE: "on #5e1a1a",
-        DiffTag.INSERT: "on #1a4a2a",
-        DiffTag.REPLACE: "on #4a3a14",
+        DiffTag.DELETE: "on #72261a",
+        DiffTag.INSERT: "on #1e5c34",
+        DiffTag.REPLACE: "#1e1e1e on #6a6a6a",
     }
-    _FILLER_BG = "on #363636"
+    _FILLER_BG = "on #2a2a2a"
 
     def __init__(
         self,
