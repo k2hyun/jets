@@ -2525,7 +2525,7 @@ class JsonEditor(Widget, can_focus=True):
             del self._folds[0]
 
     def _fold_at_depth(self, depth: int) -> None:
-        """지정된 depth의 foldable 블록을 접기."""
+        """지정된 depth의 foldable 블록과 긴 string을 접기."""
         self._folds.clear()
         self._collapsed_strings.clear()
         target_indent = depth * 4  # indent=4 기준
@@ -2538,6 +2538,8 @@ class JsonEditor(Widget, can_focus=True):
                 rng = self._find_foldable_at(i)
                 if rng:
                     self._folds[rng[0]] = rng[1]
+                elif self._find_long_string_at(i):
+                    self._collapsed_strings.add(i)
 
     # -- Visual mode -------------------------------------------------------
 
