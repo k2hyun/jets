@@ -243,9 +243,9 @@ class JsonEditorApp(App):
             return
 
         editor = self.query_one("#editor", JsonEditor)
-        editor.set_content(content)
         self.jsonl = target.lower().endswith(".jsonl")
         editor.jsonl = self.jsonl
+        editor.set_content(content)
         self.file_path = target
         self._update_title()
         self.notify(f"Opened: {target}", severity="information")
