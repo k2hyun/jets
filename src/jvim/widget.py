@@ -1459,6 +1459,8 @@ class JsonEditor(Widget, can_focus=True):
             regex = re.compile(pattern, flags)
         except re.error as e:
             self.status_msg = f"Invalid pattern: {e}"
+            self._search_match_by_row = {}
+            self._current_match = -1
             return
 
         # Find all matches
