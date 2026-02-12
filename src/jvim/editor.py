@@ -198,10 +198,10 @@ class JsonEditorApp(App):
                 main_editor.read_only = self._main_was_read_only
                 main_editor.update_embedded_string(row, col_start, col_end, minified)
                 self.notify("Embedded JSON updated", severity="information")
-                if event.quit_after:
-                    self.query_one("#ej-panel").remove_class("visible")
-                    main_editor._scroll_top = self._main_scroll_top
-                    main_editor.focus()
+                # 스택이 비면 항상 패널 닫기 (재 :w 시 파일 덮어쓰기 방지)
+                self.query_one("#ej-panel").remove_class("visible")
+                main_editor._scroll_top = self._main_scroll_top
+                main_editor.focus()
             return
 
         target = event.file_path or self.file_path
