@@ -41,8 +41,8 @@ dev = [
 jvim = "jvim.editor:main"
 jvi = "jvim.editor:main"
 jv = "jvim.editor:main"
-jvimdiff = "jvim.differ:diff_main"
-jvd = "jvim.differ:diff_main"
+jvimdiff = "jvim.differ:main"
+jvd = "jvim.differ:main"
 
 [project.urls]
 Homepage = "https://github.com/k2hyun/jvim"

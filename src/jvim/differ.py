@@ -493,7 +493,7 @@ class JsonDiffApp(App):
             self.query_one("#right-editor", DiffEditor).focus()
 
 
-def diff_main() -> None:
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jvimdiff",
         description="JSON diff viewer with vim-style keybindings",
@@ -535,4 +535,4 @@ def diff_main() -> None:
 
 
 if __name__ == "__main__":
-    diff_main()
+    main()
