@@ -98,8 +98,6 @@ class JsonEditorApp(App):
         editor = self.query_one("#editor", JsonEditor)
         history = _load_history()
         editor.set_history(history)
-        # 1-depth 기준으로 자동 fold
-        editor._fold_at_depth(1)
         editor.focus()
 
     def _update_title(self) -> None:
@@ -136,7 +134,10 @@ class JsonEditorApp(App):
             self.query_one("#editor").focus()
         elif self._is_ej_editor_focused():
             if self._ej_has_unsaved_changes():
-                self.notify("Unsaved changes! Use :w to save or :q! to discard", severity="warning")
+                self.notify(
+                    "Unsaved changes! Use :w to save or :q! to discard",
+                    severity="warning",
+                )
             else:
                 self._close_ej_panel()
         else:
@@ -152,9 +153,7 @@ class JsonEditorApp(App):
         else:
             self._save_and_exit()
 
-    def on_json_editor_json_validated(
-        self, event: JsonEditor.JsonValidated
-    ) -> None:
+    def on_json_editor_json_validated(self, event: JsonEditor.JsonValidated) -> None:
         if event.valid:
             self.notify("JSON is valid", severity="information")
         else:
@@ -192,7 +191,9 @@ class JsonEditorApp(App):
                 else:
                     main_editor = self.query_one("#editor", JsonEditor)
                     main_editor.read_only = self._main_was_read_only
-                    main_editor.update_embedded_string(row, col_start, col_end, minified)
+                    main_editor.update_embedded_string(
+                        row, col_start, col_end, minified
+                    )
                     self.query_one("#ej-panel").remove_class("visible")
                     main_editor._scroll_top = self._main_scroll_top
                     main_editor.focus()
@@ -202,11 +203,25 @@ class JsonEditorApp(App):
                     lines = prev_content.split("\n")
                     lines[row] = lines[row][:col_start] + escaped + lines[row][col_end:]
                     new_prev = "\n".join(lines)
-                    self._ej_stack[-1] = (row, col_start, new_col_end, new_prev, event.content)
+                    self._ej_stack[-1] = (
+                        row,
+                        col_start,
+                        new_col_end,
+                        new_prev,
+                        event.content,
+                    )
                 else:
                     main_editor = self.query_one("#editor", JsonEditor)
-                    main_editor.update_embedded_string(row, col_start, col_end, minified)
-                    self._ej_stack[-1] = (row, col_start, new_col_end, prev_content, event.content)
+                    main_editor.update_embedded_string(
+                        row, col_start, col_end, minified
+                    )
+                    self._ej_stack[-1] = (
+                        row,
+                        col_start,
+                        new_col_end,
+                        prev_content,
+                        event.content,
+                    )
                 self._update_ej_title()
 
             self.notify("Embedded JSON saved", severity="information")
@@ -315,26 +330,30 @@ class JsonEditorApp(App):
         if self._is_ej_editor_focused():
             # Nested ej from ej panel - push to stack
             current_content = ej_editor.get_content()
-            self._ej_stack.append((
-                event.source_row,
-                event.source_col_start,
-                event.source_col_end,
-                current_content,
-                event.content,  # original content for change detection
-            ))
+            self._ej_stack.append(
+                (
+                    event.source_row,
+                    event.source_col_start,
+                    event.source_col_end,
+                    current_content,
+                    event.content,  # original content for change detection
+                )
+            )
         else:
             # From main editor - reset stack to level 1
             main_editor = self.query_one("#editor", JsonEditor)
             self._main_was_read_only = main_editor.read_only
             self._main_scroll_top = main_editor._scroll_top
             main_editor.read_only = True
-            self._ej_stack = [(
-                event.source_row,
-                event.source_col_start,
-                event.source_col_end,
-                "",  # No previous ej content
-                event.content,  # original content for change detection
-            )]
+            self._ej_stack = [
+                (
+                    event.source_row,
+                    event.source_col_start,
+                    event.source_col_end,
+                    "",  # No previous ej content
+                    event.content,  # original content for change detection
+                )
+            ]
 
         # Set content and show panel
         ej_editor.set_content(event.content)
@@ -355,7 +374,8 @@ def main() -> None:
         help="JSON file to open",
     )
     parser.add_argument(
-        "-R", "--read-only",
+        "-R",
+        "--read-only",
         action="store_true",
         default=False,
         help="open in read-only mode",

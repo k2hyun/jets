@@ -205,13 +205,13 @@ class TestJsonl:
         assert '"a": 1' in result
         assert '"b": 2' in result
         # Pretty printed with indentation
-        assert '    ' in result or result.count('\n') > 1
+        assert "    " in result or result.count("\n") > 1
 
     def test_pretty_to_jsonl(self):
         pretty = '{\n    "a": 1\n}\n\n{\n    "b": 2\n}'
         result = JsonEditor._pretty_to_jsonl(pretty)
 
-        lines = result.split('\n')
+        lines = result.split("\n")
         assert len(lines) == 2
         assert '{"a": 1}' in lines[0] or '{"a":1}' in lines[0]
 
@@ -285,7 +285,7 @@ class TestJsonValidation:
     def test_invalid_jsonl_record(self):
         content = '{\n    "a": 1\n}\n\n{\n    "b": \n}'
         editor = JsonEditor(jsonl=True)
-        editor.lines = content.split('\n')
+        editor.lines = content.split("\n")
         valid, err = editor._check_content(editor.get_content())
 
         assert valid is False
@@ -296,14 +296,14 @@ class TestMovement:
     """Tests for cursor movement."""
 
     def test_clamp_cursor_row(self):
-        editor = JsonEditor('line1\nline2')
+        editor = JsonEditor("line1\nline2")
         editor.cursor_row = 10
         editor._clamp_cursor()
 
         assert editor.cursor_row == 1
 
     def test_clamp_cursor_col_normal_mode(self):
-        editor = JsonEditor('short')
+        editor = JsonEditor("short")
         editor._mode = EditorMode.NORMAL
         editor.cursor_col = 10
         editor._clamp_cursor()
@@ -312,7 +312,7 @@ class TestMovement:
         assert editor.cursor_col == 4
 
     def test_clamp_cursor_col_insert_mode(self):
-        editor = JsonEditor('short')
+        editor = JsonEditor("short")
         editor._mode = EditorMode.INSERT
         editor.cursor_col = 10
         editor._clamp_cursor()
@@ -358,27 +358,27 @@ class TestCharWidth:
 
     def test_ascii_width(self):
         editor = JsonEditor()
-        assert editor._char_width('a') == 1
-        assert editor._char_width('1') == 1
+        assert editor._char_width("a") == 1
+        assert editor._char_width("1") == 1
 
     def test_cjk_width(self):
         editor = JsonEditor()
         # Korean character should be width 2
-        assert editor._char_width('한') == 2
+        assert editor._char_width("한") == 2
         # Japanese
-        assert editor._char_width('日') == 2
+        assert editor._char_width("日") == 2
         # Chinese
-        assert editor._char_width('中') == 2
+        assert editor._char_width("中") == 2
 
     def test_char_width_cache(self):
         editor = JsonEditor()
         # First call computes and caches
-        w1 = editor._char_width('한')
+        w1 = editor._char_width("한")
         # Second call uses cache
-        w2 = editor._char_width('한')
+        w2 = editor._char_width("한")
 
         assert w1 == w2 == 2
-        assert '한' in editor._char_width_cache
+        assert "한" in editor._char_width_cache
 
 
 class TestJsonPathFilter:
@@ -522,7 +522,9 @@ class TestJsonPathFilter:
         assert len(editor._search_matches) == 2  # 25 and 30
 
     def test_search_with_regex_filter(self):
-        editor = JsonEditor('{"users": [{"name": "John"}, {"name": "Jane"}, {"name": "Mary"}]}')
+        editor = JsonEditor(
+            '{"users": [{"name": "John"}, {"name": "Jane"}, {"name": "Mary"}]}'
+        )
         editor._search_buffer = "$.users[*].name~^J"
         editor._search_forward = True
         editor._execute_search()
@@ -654,6 +656,7 @@ class TestLineJump:
         editor = JsonEditor(content)
 
         from types import SimpleNamespace
+
         event = SimpleNamespace(key="g", character="G")
         editor._handle_normal(event)
 
@@ -668,6 +671,7 @@ class TestLineJump:
         editor._scroll_top = 50
 
         from types import SimpleNamespace
+
         # First 'g' to set pending
         event1 = SimpleNamespace(key="g", character="g")
         editor._handle_normal(event1)
@@ -906,7 +910,9 @@ class TestFolding:
 
     def test_fold_all_nested_deep(self):
         """중첩된 구조에서 모든 depth 접기."""
-        content = '{\n    "a": {\n        "b": {\n            "c": 1\n        }\n    }\n}'
+        content = (
+            '{\n    "a": {\n        "b": {\n            "c": 1\n        }\n    }\n}'
+        )
         # line 0: {
         # line 1:     "a": {
         # line 2:         "b": {
@@ -947,6 +953,7 @@ class TestFolding:
         editor.cursor_row = 0
 
         from types import SimpleNamespace
+
         event = SimpleNamespace(key="ctrl+f", character="")
         editor._handle_normal(event)
 
@@ -962,6 +969,7 @@ class TestFolding:
         editor.cursor_row = 25
 
         from types import SimpleNamespace
+
         event = SimpleNamespace(key="ctrl+b", character="")
         editor._handle_normal(event)
 
@@ -1000,21 +1008,25 @@ class TestStringCollapse:
     def test_toggle_collapse(self):
         """za: 긴 string 토글."""
         editor = JsonEditor(self.SAMPLE)
-        editor._toggle_fold(2)
+        # 초기 로드 시 자동 collapse됨
         assert 2 in editor._collapsed_strings
         editor._toggle_fold(2)
         assert 2 not in editor._collapsed_strings
+        editor._toggle_fold(2)
+        assert 2 in editor._collapsed_strings
 
     def test_close_collapse(self):
         """zc: 긴 string 접기."""
         editor = JsonEditor(self.SAMPLE)
+        editor._collapsed_strings.discard(2)  # 먼저 펼기
         editor._close_fold(2)
         assert 2 in editor._collapsed_strings
 
     def test_open_collapse(self):
         """zo: 긴 string 펼기."""
         editor = JsonEditor(self.SAMPLE)
-        editor._collapsed_strings.add(2)
+        # 초기 로드 시 자동 collapse됨
+        assert 2 in editor._collapsed_strings
         editor._open_fold(2)
         assert 2 not in editor._collapsed_strings
 
@@ -1096,6 +1108,7 @@ class TestVisualMode:
 
     def _key(self, char, key=None):
         from types import SimpleNamespace
+
         return SimpleNamespace(key=key or char, character=char)
 
     # -- 진입/탈출 --

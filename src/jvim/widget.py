@@ -53,7 +53,7 @@ class JsonEditor(Widget, can_focus=True):
     @dataclass
     class FileSaveRequested(Message):
         content: str
-        file_path: str       # empty string means save to current file
+        file_path: str  # empty string means save to current file
         quit_after: bool = False
 
     @dataclass
@@ -100,9 +100,7 @@ class JsonEditor(Widget, can_focus=True):
         self.jsonl: bool = jsonl
         if self.jsonl and initial_content:
             initial_content = self._jsonl_to_pretty(initial_content)
-        self.lines: list[str] = (
-            initial_content.split("\n") if initial_content else [""]
-        )
+        self.lines: list[str] = initial_content.split("\n") if initial_content else [""]
         self.cursor_row: int = 0
         self.cursor_col: int = 0
         self._mode: EditorMode = EditorMode.NORMAL
@@ -120,11 +118,17 @@ class JsonEditor(Widget, can_focus=True):
         self._search_buffer: str = ""
         self._search_pattern: str = ""
         self._search_forward: bool = True  # True for /, False for ?
-        self._search_matches: list[tuple[int, int, int]] = []  # (row, col_start, col_end)
-        self._search_match_by_row: dict[int, list[tuple[int, int, int]]] = {}  # Fast lookup
+        self._search_matches: list[
+            tuple[int, int, int]
+        ] = []  # (row, col_start, col_end)
+        self._search_match_by_row: dict[
+            int, list[tuple[int, int, int]]
+        ] = {}  # Fast lookup
         self._current_match: int = -1  # Index in _search_matches
         self._search_history: list[str] = []  # Previous search patterns
-        self._search_history_idx: int = -1  # Current position in history (-1 = new search)
+        self._search_history_idx: int = (
+            -1
+        )  # Current position in history (-1 = new search)
         self._search_history_max: int = 50  # Max history size
         # Command history
         self._command_history: list[str] = []  # Previous commands
@@ -138,12 +142,18 @@ class JsonEditor(Widget, can_focus=True):
         # Fold state
         self._folds: dict[int, int] = {}  # {fold_header_line: fold_end_line}
         self._collapsed_strings: set[int] = set()  # 접힌 긴 string 라인
-        self._string_collapse_threshold: int = 60  # 이 길이 이상의 string value를 접기 대상으로
+        self._string_collapse_threshold: int = (
+            60  # 이 길이 이상의 string value를 접기 대상으로
+        )
         # Visual mode 상태
-        self._visual_mode: str = ""          # "" | "v" | "V"
-        self._visual_anchor_row: int = 0     # 선택 시작 row
-        self._visual_anchor_col: int = 0     # 선택 시작 col (v 모드용)
-        self._yank_type: str = "line"        # "line" | "char" — paste 동작 결정
+        self._visual_mode: str = ""  # "" | "v" | "V"
+        self._visual_anchor_row: int = 0  # 선택 시작 row
+        self._visual_anchor_col: int = 0  # 선택 시작 col (v 모드용)
+        self._yank_type: str = "line"  # "line" | "char" — paste 동작 결정
+        # 초기 로드 시 긴 문자열 자동 접기
+        for i in range(len(self.lines)):
+            if self._find_long_string_at(i):
+                self._collapsed_strings.add(i)
 
     # -- Helpers -----------------------------------------------------------
 
@@ -238,10 +248,7 @@ class JsonEditor(Widget, can_focus=True):
         if not line:
             return [(0, 0)]
         if line.isascii():
-            return [
-                (s, min(s + avail, len(line)))
-                for s in range(0, len(line), avail)
-            ]
+            return [(s, min(s + avail, len(line))) for s in range(0, len(line), avail)]
         segs: list[tuple[int, int]] = []
         seg_start = 0
         w = 0
@@ -351,9 +358,7 @@ class JsonEditor(Widget, can_focus=True):
             for i in range(self._scroll_top, self.cursor_row)
             if not (is_folded and is_folded(i))
         )
-        cursor_dy = self._cursor_wrap_dy(
-            lines[self.cursor_row], self.cursor_col, avail
-        )
+        cursor_dy = self._cursor_wrap_dy(lines[self.cursor_row], self.cursor_col, avail)
         while rows_before + cursor_dy >= vh and self._scroll_top <= self.cursor_row:
             if not (is_folded and is_folded(self._scroll_top)):
                 rows_before -= wrap_rows(lines[self._scroll_top], avail)
@@ -383,6 +388,10 @@ class JsonEditor(Widget, can_focus=True):
         self.cursor_col = 0
         self._folds.clear()
         self._collapsed_strings.clear()
+        # 초기 로드 시 긴 문자열 자동 접기
+        for i in range(len(self.lines)):
+            if self._find_long_string_at(i):
+                self._collapsed_strings.add(i)
         self._invalidate_caches()
         self.refresh()
 
@@ -461,7 +470,9 @@ class JsonEditor(Widget, can_focus=True):
                 if rec_start_line >= 0:
                     rec_num = jsonl_records[rec_start_line]
                     # Show floating header
-                    header = f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
+                    header = (
+                        f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
+                    )
                     result_append(result, header, style="bold cyan on grey23")
                     result_append(result, " " * (width - len(header)) + "\n")
                     rows_used += 1
@@ -487,7 +498,7 @@ class JsonEditor(Widget, can_focus=True):
                     # 미리보기: 처음 20자 + ...
                     preview_len = min(20, qe - qs - 2)
                     # raw string에서 미리보기 추출 (따옴표 안쪽)
-                    preview = line[qs + 1:qs + 1 + preview_len]
+                    preview = line[qs + 1 : qs + 1 + preview_len]
                     suffix = f'..." ({slen} chars)'
                     # 접힌 라인: key 부분 + "preview..." (N chars) + trailing
                     collapsed_line = line[:qs] + '"' + preview + suffix + line[qe:]
@@ -553,7 +564,11 @@ class JsonEditor(Widget, can_focus=True):
                 if has_search:
                     for m_start, m_end, mi in search_by_row[line_idx]:
                         is_current = mi == self._current_match
-                        style = "black on yellow" if is_current else "black on dark_goldenrod"
+                        style = (
+                            "black on yellow"
+                            if is_current
+                            else "black on dark_goldenrod"
+                        )
                         for c in range(m_start, min(m_end, line_len)):
                             line_styles[c] = style
 
@@ -566,11 +581,15 @@ class JsonEditor(Widget, can_focus=True):
                     break
                 # Line number on first segment, or first visible row (floating line number)
                 if si == 0 or rows_used == 0:
-                    result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
+                    result_append(
+                        result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan"
+                    )
                     if rec_width:
                         rec_num = jsonl_records[line_idx]
                         if rec_num:
-                            result_append(result, f"{rec_num:>{rec_width}} ", style="dim yellow")
+                            result_append(
+                                result, f"{rec_num:>{rec_width}} ", style="dim yellow"
+                            )
                         else:
                             result_append(result, " " * (rec_width + 1))
                 else:
@@ -579,12 +598,18 @@ class JsonEditor(Widget, can_focus=True):
                 col = s_start
                 while col < s_end:
                     if is_cursor_line and col == cursor_col:
-                        result_append(result, line[col], style=f"reverse {line_styles[col]}")
+                        result_append(
+                            result, line[col], style=f"reverse {line_styles[col]}"
+                        )
                         col += 1
                         continue
                     sty = line_styles[col]
                     end = col + 1
-                    while end < s_end and line_styles[end] == sty and not (is_cursor_line and end == cursor_col):
+                    while (
+                        end < s_end
+                        and line_styles[end] == sty
+                        and not (is_cursor_line and end == cursor_col)
+                    ):
                         end += 1
                     result_append(result, line[col:end], style=sty)
                     col = end
@@ -601,7 +626,11 @@ class JsonEditor(Widget, can_focus=True):
                 # 라인 배경이 있으면 나머지 너비를 배경색으로 채움
                 if line_bg:
                     seg_w = sum(char_width(line[c]) for c in range(s_start, s_end))
-                    if is_cursor_line and cursor_col >= line_len and si == len(segs) - 1:
+                    if (
+                        is_cursor_line
+                        and cursor_col >= line_len
+                        and si == len(segs) - 1
+                    ):
                         seg_w += 1
                     pad = avail - seg_w - fold_summary_w
                     if pad > 0:
@@ -639,7 +668,9 @@ class JsonEditor(Widget, can_focus=True):
         status_msg = self.status_msg
         pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
         ro_len = 4 if read_only else 0
-        spacer_len = max(0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4)
+        spacer_len = max(
+            0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4
+        )
         result_append(result, f"  {status_msg}")
         if spacer_len:
             result_append(result, " " * spacer_len)
@@ -650,7 +681,9 @@ class JsonEditor(Widget, can_focus=True):
             result_append(result, " ", style="reverse")
         elif mode == EditorMode.SEARCH:
             prefix = "/" if self._search_forward else "?"
-            result_append(result, f"\n{prefix}{self._search_buffer}", style="bold magenta")
+            result_append(
+                result, f"\n{prefix}{self._search_buffer}", style="bold magenta"
+            )
             result_append(result, " ", style="reverse")
         else:
             result_append(result, "\n")
@@ -792,9 +825,17 @@ class JsonEditor(Widget, can_focus=True):
         if char == "h" or key == "left":
             self.cursor_col -= 1
         elif char == "j" or key == "down":
-            self.cursor_row = self._next_visible_line(self.cursor_row, 1) if self._folds else self.cursor_row + 1
+            self.cursor_row = (
+                self._next_visible_line(self.cursor_row, 1)
+                if self._folds
+                else self.cursor_row + 1
+            )
         elif char == "k" or key == "up":
-            self.cursor_row = self._next_visible_line(self.cursor_row, -1) if self._folds else self.cursor_row - 1
+            self.cursor_row = (
+                self._next_visible_line(self.cursor_row, -1)
+                if self._folds
+                else self.cursor_row - 1
+            )
         elif char == "l" or key == "right":
             self.cursor_col += 1
         elif char == "w":
@@ -815,36 +856,51 @@ class JsonEditor(Widget, can_focus=True):
             self._jump_matching_bracket()
         elif key == "pagedown" or key == "ctrl+f":
             if self._folds:
-                self.cursor_row = self._skip_visible_lines(self.cursor_row, self._visible_height(), 1)
+                self.cursor_row = self._skip_visible_lines(
+                    self.cursor_row, self._visible_height(), 1
+                )
             else:
                 self.cursor_row += self._visible_height()
         elif key == "pageup" or key == "ctrl+b":
             if self._folds:
-                self.cursor_row = self._skip_visible_lines(self.cursor_row, self._visible_height(), -1)
+                self.cursor_row = self._skip_visible_lines(
+                    self.cursor_row, self._visible_height(), -1
+                )
             else:
                 self.cursor_row -= self._visible_height()
         elif key == "ctrl+d":
             if self._folds:
-                self.cursor_row = self._skip_visible_lines(self.cursor_row, self._visible_height() // 2, 1)
+                self.cursor_row = self._skip_visible_lines(
+                    self.cursor_row, self._visible_height() // 2, 1
+                )
             else:
                 self.cursor_row += self._visible_height() // 2
         elif key == "ctrl+u":
             if self._folds:
-                self.cursor_row = self._skip_visible_lines(self.cursor_row, self._visible_height() // 2, -1)
+                self.cursor_row = self._skip_visible_lines(
+                    self.cursor_row, self._visible_height() // 2, -1
+                )
             else:
                 self.cursor_row -= self._visible_height() // 2
         elif key == "ctrl+e":
-            nxt = self._next_visible_line(self._scroll_top, 1) if self._folds else self._scroll_top + 1
+            nxt = (
+                self._next_visible_line(self._scroll_top, 1)
+                if self._folds
+                else self._scroll_top + 1
+            )
             self._scroll_top = min(nxt, len(self.lines) - 1)
         elif key == "ctrl+y":
-            prev = self._next_visible_line(self._scroll_top, -1) if self._folds else self._scroll_top - 1
+            prev = (
+                self._next_visible_line(self._scroll_top, -1)
+                if self._folds
+                else self._scroll_top - 1
+            )
             self._scroll_top = max(prev, 0)
         elif key == "ctrl+g":
             total = len(self.lines)
             pct = (self.cursor_row + 1) * 100 // total if total else 0
             self.status_msg = (
-                f'"{self._mode.name}" line {self.cursor_row + 1} of {total}'
-                f" --{pct}%--"
+                f'"{self._mode.name}" line {self.cursor_row + 1} of {total} --{pct}%--'
             )
 
         # enter insert mode
@@ -1273,7 +1329,9 @@ class JsonEditor(Widget, can_focus=True):
             self.cursor_col = 0
             self._scroll_cursor_to_top()
             return
-        if stripped.isdigit() or (len(stripped) > 1 and stripped[0] == "p" and stripped[1:].isdigit()):
+        if stripped.isdigit() or (
+            len(stripped) > 1 and stripped[0] == "p" and stripped[1:].isdigit()
+        ):
             num = int(stripped if stripped.isdigit() else stripped[1:])
             if self.jsonl:
                 records = self._jsonl_line_records()
@@ -1309,9 +1367,7 @@ class JsonEditor(Widget, can_focus=True):
                     self.status_msg = err
                     return
             save = self._pretty_to_jsonl(content) if self.jsonl else content
-            self.post_message(
-                self.FileSaveRequested(content=save, file_path=arg)
-            )
+            self.post_message(self.FileSaveRequested(content=save, file_path=arg))
         elif verb == "q":
             if force:
                 self.post_message(self.ForceQuit())
@@ -1330,9 +1386,7 @@ class JsonEditor(Widget, can_focus=True):
                     return
             save = self._pretty_to_jsonl(content) if self.jsonl else content
             self.post_message(
-                self.FileSaveRequested(
-                    content=save, file_path=arg, quit_after=True
-                )
+                self.FileSaveRequested(content=save, file_path=arg, quit_after=True)
             )
         elif verb == "e":
             if not arg:
@@ -1507,7 +1561,7 @@ class JsonEditor(Widget, can_focus=True):
                     bracket_depth -= 1
                 elif bracket_depth == 0 and pattern[idx:].startswith(op):
                     path = pattern[:idx]
-                    value_str = pattern[idx + len(op):]
+                    value_str = pattern[idx + len(op) :]
                     value = self._parse_json_value(value_str)
                     return (path, op, value)
                 idx += 1
@@ -1613,7 +1667,8 @@ class JsonEditor(Widget, can_focus=True):
         # Filter by value if operator present
         if op:
             results = [
-                p for p in results
+                p
+                for p in results
                 if self._jsonpath_value_matches(
                     self._get_value_at_path(data, p), op, filter_value
                 )
@@ -1662,7 +1717,9 @@ class JsonEditor(Widget, can_focus=True):
         block_start_lines = self._compute_block_start_lines()
 
         # Find all matches with their block data
-        all_results: list[tuple[int, any, list[str | int]]] = []  # (block_idx, data, path)
+        all_results: list[
+            tuple[int, any, list[str | int]]
+        ] = []  # (block_idx, data, path)
         for block_idx, block in enumerate(blocks):
             try:
                 data = json.loads(block)
@@ -1699,7 +1756,9 @@ class JsonEditor(Widget, can_focus=True):
         self._search_matches = []
         for block_idx, data, json_path in all_results:
             start_line = block_start_lines.get(block_idx, 0)
-            pos = self._find_json_value_position_fast(data, json_path, key_index, start_line)
+            pos = self._find_json_value_position_fast(
+                data, json_path, key_index, start_line
+            )
             if pos:
                 self._search_matches.append(pos)
         self._build_search_row_index()
@@ -1725,17 +1784,17 @@ class JsonEditor(Widget, can_focus=True):
                 # Find end of string
                 end_pos = quote_pos + 1
                 while end_pos < len(line):
-                    if line[end_pos] == '"' and line[end_pos - 1] != '\\':
+                    if line[end_pos] == '"' and line[end_pos - 1] != "\\":
                         break
                     end_pos += 1
                 if end_pos >= len(line):
                     break
                 # Check if followed by colon (it's a key)
                 after = end_pos + 1
-                while after < len(line) and line[after] in ' \t':
+                while after < len(line) and line[after] in " \t":
                     after += 1
-                if after < len(line) and line[after] == ':':
-                    key = line[quote_pos:end_pos + 1]  # Include quotes
+                if after < len(line) and line[after] == ":":
+                    key = line[quote_pos : end_pos + 1]  # Include quotes
                     if key not in index:
                         index[key] = []
                     index[key].append((row, quote_pos))
@@ -1800,7 +1859,9 @@ class JsonEditor(Widget, can_focus=True):
                             line = self.lines[row]
                             value_start = col + len(key_pattern)
                             # Skip ": "
-                            while value_start < len(line) and line[value_start] in ': \t':
+                            while (
+                                value_start < len(line) and line[value_start] in ": \t"
+                            ):
                                 value_start += 1
                             target_str = json.dumps(current, ensure_ascii=False)
                             if line[value_start:].startswith(target_str):
@@ -1832,21 +1893,21 @@ class JsonEditor(Widget, can_focus=True):
             # String - find closing quote
             i = start + 1
             while i < len(line):
-                if line[i] == '"' and line[i - 1] != '\\':
+                if line[i] == '"' and line[i - 1] != "\\":
                     return i + 1
                 i += 1
             return len(line)
-        elif ch in '-0123456789':
+        elif ch in "-0123456789":
             # Number
             i = start + 1
-            while i < len(line) and line[i] in '0123456789.eE+-':
+            while i < len(line) and line[i] in "0123456789.eE+-":
                 i += 1
             return i
-        elif line[start:start + 4] == 'true':
+        elif line[start : start + 4] == "true":
             return start + 4
-        elif line[start:start + 5] == 'false':
+        elif line[start : start + 5] == "false":
             return start + 5
-        elif line[start:start + 4] == 'null':
+        elif line[start : start + 4] == "null":
             return start + 4
         return start
 
@@ -1889,7 +1950,9 @@ class JsonEditor(Widget, can_focus=True):
             next_key, after = self._jsonpath_next_segment(rest)
             if next_key is not None:
                 # Search recursively
-                self._jsonpath_recursive_descent(data, next_key, after, current_path, results)
+                self._jsonpath_recursive_descent(
+                    data, next_key, after, current_path, results
+                )
             return
 
         # Handle dot notation (.key)
@@ -1918,7 +1981,7 @@ class JsonEditor(Widget, can_focus=True):
                 raise ValueError("Unclosed bracket")
 
             index_str = remaining_path[1:end]
-            after = remaining_path[end + 1:]
+            after = remaining_path[end + 1 :]
 
             if index_str == "*":
                 # Wildcard
@@ -1932,12 +1995,16 @@ class JsonEditor(Widget, can_focus=True):
                 # Numeric index
                 idx = int(index_str)
                 if isinstance(data, list) and -len(data) <= idx < len(data):
-                    self._jsonpath_traverse(data[idx], after, current_path + [idx], results)
+                    self._jsonpath_traverse(
+                        data[idx], after, current_path + [idx], results
+                    )
             else:
                 # String key in brackets
                 key = index_str.strip("'\"")
                 if isinstance(data, dict) and key in data:
-                    self._jsonpath_traverse(data[key], after, current_path + [key], results)
+                    self._jsonpath_traverse(
+                        data[key], after, current_path + [key], results
+                    )
             return
 
     def _jsonpath_next_segment(self, path: str) -> tuple[str | None, str]:
@@ -1949,7 +2016,7 @@ class JsonEditor(Widget, can_focus=True):
             end = path.find("]")
             if end == -1:
                 return None, path
-            return path[1:end], path[end + 1:]
+            return path[1:end], path[end + 1 :]
 
         if path.startswith("."):
             return None, path
@@ -1975,13 +2042,19 @@ class JsonEditor(Widget, can_focus=True):
         if isinstance(data, dict):
             for k, v in data.items():
                 if target_key == "*" or k == target_key:
-                    self._jsonpath_traverse(v, remaining_path, current_path + [k], results)
+                    self._jsonpath_traverse(
+                        v, remaining_path, current_path + [k], results
+                    )
                 # Continue descent
-                self._jsonpath_recursive_descent(v, target_key, remaining_path, current_path + [k], results)
+                self._jsonpath_recursive_descent(
+                    v, target_key, remaining_path, current_path + [k], results
+                )
         elif isinstance(data, list):
             for i, v in enumerate(data):
                 # Continue descent into array elements
-                self._jsonpath_recursive_descent(v, target_key, remaining_path, current_path + [i], results)
+                self._jsonpath_recursive_descent(
+                    v, target_key, remaining_path, current_path + [i], results
+                )
 
     def _find_match_near_cursor(self) -> int:
         """Find the index of the match nearest to cursor in search direction."""
@@ -2017,7 +2090,9 @@ class JsonEditor(Widget, can_focus=True):
         self.cursor_col = col_start
         self._scroll_cursor_to_center()
         total = len(self._search_matches)
-        self.status_msg = f"/{self._search_pattern}  [{self._current_match + 1}/{total}]"
+        self.status_msg = (
+            f"/{self._search_pattern}  [{self._current_match + 1}/{total}]"
+        )
 
     def _goto_next_match(self) -> None:
         """Go to the next search match."""
@@ -2094,9 +2169,7 @@ class JsonEditor(Widget, can_focus=True):
             self.post_message(self.JsonValidated(content=content, valid=True))
             return True
         self.status_msg = err
-        self.post_message(
-            self.JsonValidated(content=content, valid=False, error=err)
-        )
+        self.post_message(self.JsonValidated(content=content, valid=False, error=err))
         return False
 
     def _format_json(self) -> None:
@@ -2150,8 +2223,8 @@ class JsonEditor(Widget, can_focus=True):
                 start = i
                 i += 1
                 while i < len(line):
-                    if line[i] == '"' and line[i - 1] != '\\':
-                        raw = line[start + 1:i]
+                    if line[i] == '"' and line[i - 1] != "\\":
+                        raw = line[start + 1 : i]
                         try:
                             content = json.loads(f'"{raw}"')
                             strings.append((start, i + 1, content))
@@ -2167,7 +2240,7 @@ class JsonEditor(Widget, can_focus=True):
         # Find string values (strings that follow a ':')
         for start, end, content in strings:
             before = line[:start].rstrip()
-            if before.endswith(':'):
+            if before.endswith(":"):
                 return (start, end, content)
 
         return None
@@ -2343,7 +2416,9 @@ class JsonEditor(Widget, can_focus=True):
 
     # -- Folding -----------------------------------------------------------
 
-    def _find_matching_bracket_forward(self, row: int, col: int) -> tuple[int, int] | None:
+    def _find_matching_bracket_forward(
+        self, row: int, col: int
+    ) -> tuple[int, int] | None:
         """_search_bracket_forward와 동일하나 커서를 변경하지 않고 위치만 반환."""
         line = self.lines[row]
         if col >= len(line):
@@ -2436,12 +2511,12 @@ class JsonEditor(Widget, can_focus=True):
                 start = i
                 i += 1
                 while i < len(line):
-                    if line[i] == '"' and line[i - 1] != '\\':
+                    if line[i] == '"' and line[i - 1] != "\\":
                         break
                     i += 1
                 end = i + 1  # 닫는 따옴표 포함
                 before = line[:start].rstrip()
-                if before.endswith(':'):
+                if before.endswith(":"):
                     str_len = end - start - 2  # 따옴표 제외 실제 문자열 길이
                     if str_len >= self._string_collapse_threshold:
                         return (start, end, str_len)
@@ -2578,7 +2653,7 @@ class JsonEditor(Widget, can_focus=True):
     def _execute_visual_linewise(self, op: str) -> None:
         """Line-wise visual 연산자 (V 모드)."""
         sr, _sc, er, _ec = self._visual_selection_range()
-        selected = self.lines[sr:er + 1]
+        selected = self.lines[sr : er + 1]
         self._yank_type = "line"
         if op == "y":
             self.yank_buffer = selected[:]
@@ -2590,16 +2665,20 @@ class JsonEditor(Widget, can_focus=True):
         self._save_undo()
         self.yank_buffer = selected[:]
         if er < len(self.lines) - 1 or sr > 0:
-            self.lines[sr:er + 1] = []
+            self.lines[sr : er + 1] = []
             if not self.lines:
                 self.lines = [""]
         else:
             # 전체 파일 선택 시
-            self.lines[sr:er + 1] = [""]
+            self.lines[sr : er + 1] = [""]
         self.cursor_row = min(sr, len(self.lines) - 1)
         self.cursor_col = 0
         if op == "c":
-            indent = len(selected[0]) - len(selected[0].lstrip()) if selected[0].strip() else 0
+            indent = (
+                len(selected[0]) - len(selected[0].lstrip())
+                if selected[0].strip()
+                else 0
+            )
             self.lines.insert(self.cursor_row, " " * indent)
             self.cursor_col = indent
             self._enter_insert()
@@ -2612,12 +2691,12 @@ class JsonEditor(Widget, can_focus=True):
         self._yank_type = "char"
         # 선택 텍스트 추출
         if sr == er:
-            text = self.lines[sr][sc:ec + 1]
+            text = self.lines[sr][sc : ec + 1]
         else:
             parts = [self.lines[sr][sc:]]
             for r in range(sr + 1, er):
                 parts.append(self.lines[r])
-            parts.append(self.lines[er][:ec + 1])
+            parts.append(self.lines[er][: ec + 1])
             text = "\n".join(parts)
         if op == "y":
             self.yank_buffer = [text]
@@ -2630,12 +2709,12 @@ class JsonEditor(Widget, can_focus=True):
         self.yank_buffer = [text]
         if sr == er:
             line = self.lines[sr]
-            self.lines[sr] = line[:sc] + line[ec + 1:]
+            self.lines[sr] = line[:sc] + line[ec + 1 :]
         else:
             before = self.lines[sr][:sc]
-            after = self.lines[er][ec + 1:]
+            after = self.lines[er][ec + 1 :]
             self.lines[sr] = before + after
-            del self.lines[sr + 1:er + 1]
+            del self.lines[sr + 1 : er + 1]
         self.cursor_row = sr
         self.cursor_col = sc
         if op == "c":
@@ -2666,7 +2745,9 @@ class JsonEditor(Widget, can_focus=True):
             line = self.lines[self.cursor_row]
             insert_col = min(self.cursor_col + 1, len(line))
             if "\n" not in text:
-                self.lines[self.cursor_row] = line[:insert_col] + text + line[insert_col:]
+                self.lines[self.cursor_row] = (
+                    line[:insert_col] + text + line[insert_col:]
+                )
                 self.cursor_col = insert_col + len(text) - 1
             else:
                 parts = text.split("\n")
@@ -2694,7 +2775,9 @@ class JsonEditor(Widget, can_focus=True):
             line = self.lines[self.cursor_row]
             insert_col = self.cursor_col
             if "\n" not in text:
-                self.lines[self.cursor_row] = line[:insert_col] + text + line[insert_col:]
+                self.lines[self.cursor_row] = (
+                    line[:insert_col] + text + line[insert_col:]
+                )
                 self.cursor_col = insert_col + len(text) - 1
             else:
                 parts = text.split("\n")
