@@ -167,41 +167,49 @@ class JsonEditorApp(App):
         if self._is_help_editor_focused():
             return
 
-        # EJ editor: update parent and close/pop panel
+        # EJ editor: 부모 문서 갱신
         if self._is_ej_editor_focused() and self._ej_stack:
-            row, col_start, col_end, prev_content, _ = self._ej_stack.pop()
-            # Minify the JSON to a single line
+            row, col_start, col_end, prev_content, _ = self._ej_stack[-1]
             try:
                 parsed = json.loads(event.content)
                 minified = json.dumps(parsed, ensure_ascii=False)
             except json.JSONDecodeError:
                 self.notify("Invalid JSON", severity="error")
-                # Restore the popped entry with current content as new original
-                self._ej_stack.append((row, col_start, col_end, prev_content, event.content))
                 return
 
-            if self._ej_stack:
-                # Update previous ej content and show it
-                ej_editor = self.query_one("#ej-editor", JsonEditor)
-                lines = prev_content.split("\n")
-                line = lines[row]
-                escaped = json.dumps(minified, ensure_ascii=False)
-                lines[row] = line[:col_start] + escaped + line[col_end:]
-                new_content = "\n".join(lines)
-                ej_editor.set_content(new_content)
-                # Keep original content unchanged so modified indicator stays
-                self._update_ej_title()
-                self.notify("Embedded JSON updated", severity="information")
+            escaped = json.dumps(minified, ensure_ascii=False)
+            new_col_end = col_start + len(escaped)
+
+            if event.quit_after:
+                # :wq — pop 후 상위 레벨 복원 또는 패널 닫기
+                self._ej_stack.pop()
+                if self._ej_stack:
+                    ej_editor = self.query_one("#ej-editor", JsonEditor)
+                    lines = prev_content.split("\n")
+                    lines[row] = lines[row][:col_start] + escaped + lines[row][col_end:]
+                    ej_editor.set_content("\n".join(lines))
+                    self._update_ej_title()
+                else:
+                    main_editor = self.query_one("#editor", JsonEditor)
+                    main_editor.read_only = self._main_was_read_only
+                    main_editor.update_embedded_string(row, col_start, col_end, minified)
+                    self.query_one("#ej-panel").remove_class("visible")
+                    main_editor._scroll_top = self._main_scroll_top
+                    main_editor.focus()
             else:
-                # Update main editor and restore its read-only state
-                main_editor = self.query_one("#editor", JsonEditor)
-                main_editor.read_only = self._main_was_read_only
-                main_editor.update_embedded_string(row, col_start, col_end, minified)
-                self.notify("Embedded JSON updated", severity="information")
-                # 스택이 비면 항상 패널 닫기 (재 :w 시 파일 덮어쓰기 방지)
-                self.query_one("#ej-panel").remove_class("visible")
-                main_editor._scroll_top = self._main_scroll_top
-                main_editor.focus()
+                # :w — 부모 갱신 후 패널 유지 (스택 pop 안 함)
+                if len(self._ej_stack) > 1:
+                    lines = prev_content.split("\n")
+                    lines[row] = lines[row][:col_start] + escaped + lines[row][col_end:]
+                    new_prev = "\n".join(lines)
+                    self._ej_stack[-1] = (row, col_start, new_col_end, new_prev, event.content)
+                else:
+                    main_editor = self.query_one("#editor", JsonEditor)
+                    main_editor.update_embedded_string(row, col_start, col_end, minified)
+                    self._ej_stack[-1] = (row, col_start, new_col_end, prev_content, event.content)
+                self._update_ej_title()
+
+            self.notify("Embedded JSON saved", severity="information")
             return
 
         target = event.file_path or self.file_path
