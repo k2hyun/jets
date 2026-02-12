@@ -1097,6 +1097,92 @@ class TestStringCollapse:
         assert 2 not in editor._collapsed_strings
 
 
+class TestFoldIndexAdjust:
+    """fold/collapse 인덱스가 편집 후 올바르게 조정되는지 테스트."""
+
+    def _key(self, char, key=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(key=key or char, character=char)
+
+    def test_insert_line_shifts_fold(self):
+        """o 명령으로 라인 삽입 시 이후 fold 인덱스 이동."""
+        content = '{\n    "a": {\n        "x": 1\n    },\n    "b": 2\n}'
+        editor = JsonEditor(content)
+        # fold "a" block: line 1 → line 3
+        editor._folds[1] = 3
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("o"))
+        # fold가 한 칸 밀려야 함
+        assert 1 not in editor._folds
+        assert 2 in editor._folds
+        assert editor._folds[2] == 4
+
+    def test_delete_line_shifts_fold(self):
+        """dd 명령으로 라인 삭제 시 이후 fold 인덱스 이동."""
+        content = "line0\nline1\nline2\nline3\nline4"
+        editor = JsonEditor(content)
+        editor._folds[3] = 4
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        # fold가 한 칸 당겨져야 함
+        assert 3 not in editor._folds
+        assert 2 in editor._folds
+        assert editor._folds[2] == 3
+
+    def test_delete_fold_header_removes_fold(self):
+        """fold 헤더 라인 삭제 시 해당 fold 제거."""
+        content = "line0\nline1\nline2\nline3"
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        assert len(editor._folds) == 0
+
+    def test_insert_shifts_collapsed_strings(self):
+        """라인 삽입 시 collapsed string 인덱스 이동."""
+        content = "line0\nline1\nline2"
+        editor = JsonEditor(content)
+        editor._collapsed_strings = {2}
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("o"))
+        assert 2 not in editor._collapsed_strings
+        assert 3 in editor._collapsed_strings
+
+    def test_join_lines_shifts_fold(self):
+        """J 명령으로 라인 병합 시 이후 fold 인덱스 이동."""
+        content = "line0\nline1\nline2\nline3\nline4"
+        editor = JsonEditor(content)
+        editor._folds[3] = 4
+        editor.cursor_row = 0
+        editor._join_lines()
+        assert 2 in editor._folds
+        assert editor._folds[2] == 3
+
+    def test_fold_containing_deletion_shrinks(self):
+        """fold 내부 라인 삭제 시 fold 범위 축소."""
+        content = "line0\nline1\nline2\nline3\nline4"
+        editor = JsonEditor(content)
+        editor._folds[0] = 4  # fold 전체
+        editor.cursor_row = 2
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        assert editor._folds[0] == 3
+
+    def test_visual_linewise_change_full_file(self):
+        """V 모드 전체 선택 + c → 빈 줄 1개만 남기고 INSERT 진입 (issue #3)."""
+        content = '{\n    "a": 1\n}'
+        editor = JsonEditor(content)
+        editor._handle_normal(self._key("V"))
+        # 전체 선택: 0 → 마지막 줄
+        editor.cursor_row = len(editor.lines) - 1
+        editor._handle_normal(self._key("c"))
+        assert len(editor.lines) == 1
+        assert editor._mode == EditorMode.INSERT
+
+
 class TestVisualMode:
     """Tests for visual mode (v/V) selection and operators."""
 

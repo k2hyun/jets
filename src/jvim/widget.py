@@ -935,6 +935,7 @@ class JsonEditor(Widget, can_focus=True):
                 extra = "    " if before.endswith(("{", "[")) else ""
                 self.cursor_row += 1
                 self.lines.insert(self.cursor_row, " " * indent + extra)
+                self._adjust_line_indices(self.cursor_row, 1)
                 self.cursor_col = indent + len(extra)
                 self._enter_insert()
         elif char == "O":
@@ -945,6 +946,7 @@ class JsonEditor(Widget, can_focus=True):
                 self._save_undo()
                 indent = self._current_indent()
                 self.lines.insert(self.cursor_row, " " * indent)
+                self._adjust_line_indices(self.cursor_row, 1)
                 self.cursor_col = indent
                 self._enter_insert()
 
@@ -1057,7 +1059,9 @@ class JsonEditor(Widget, can_focus=True):
             self._yank_type = "line"
             self.yank_buffer = [self.lines[self.cursor_row]]
             if len(self.lines) > 1:
+                deleted_at = self.cursor_row
                 self.lines.pop(self.cursor_row)
+                self._adjust_line_indices(deleted_at, -1)
                 if self.cursor_row >= len(self.lines):
                     self.cursor_row = len(self.lines) - 1
             else:
@@ -1163,7 +1167,9 @@ class JsonEditor(Widget, can_focus=True):
                 prev = self.lines[self.cursor_row - 1]
                 self.cursor_col = len(prev)
                 self.lines[self.cursor_row - 1] = prev + self.lines[self.cursor_row]
+                deleted_at = self.cursor_row
                 self.lines.pop(self.cursor_row)
+                self._adjust_line_indices(deleted_at, -1)
                 self.cursor_row -= 1
             return
 
@@ -1183,6 +1189,7 @@ class JsonEditor(Widget, can_focus=True):
                     self.cursor_row + 2,
                     closing_indent + line[self.cursor_col :].lstrip(),
                 )
+                self._adjust_line_indices(self.cursor_row + 1, 2)
                 self.cursor_row += 1
                 self.cursor_col = len(new_indent)
                 return
@@ -1192,6 +1199,7 @@ class JsonEditor(Widget, can_focus=True):
             new_line = " " * indent + extra + line[self.cursor_col :]
             self.cursor_row += 1
             self.lines.insert(self.cursor_row, new_line)
+            self._adjust_line_indices(self.cursor_row, 1)
             self.cursor_col = indent + len(extra)
             return
 
@@ -2203,6 +2211,8 @@ class JsonEditor(Widget, can_focus=True):
                 return
         self._save_undo()
         self.lines = "\n\n".join(formatted).split("\n")
+        self._folds.clear()
+        self._collapsed_strings.clear()
         self.cursor_row = 0
         self.cursor_col = 0
         self.status_msg = "formatted"
@@ -2413,6 +2423,49 @@ class JsonEditor(Widget, can_focus=True):
             row -= 1
             if row >= 0:
                 col = len(self.lines[row]) - 1
+
+    # -- Fold/collapse index adjustment ------------------------------------
+
+    def _adjust_line_indices(self, from_line: int, delta: int) -> None:
+        """라인 삽입(delta>0)/삭제(delta<0) 후 fold/collapse 인덱스 조정."""
+        if delta == 0:
+            return
+        if delta > 0:
+            # 삽입: from_line 이후 인덱스를 delta만큼 증가
+            new_folds = {}
+            for s, e in self._folds.items():
+                ns = s + delta if s >= from_line else s
+                ne = e + delta if e >= from_line else e
+                new_folds[ns] = ne
+            self._folds = new_folds
+            self._collapsed_strings = {
+                (i + delta if i >= from_line else i) for i in self._collapsed_strings
+            }
+        else:
+            abs_d = abs(delta)
+            del_end = from_line + abs_d  # exclusive
+            new_folds = {}
+            for s, e in self._folds.items():
+                if e < from_line:
+                    new_folds[s] = e
+                elif s >= del_end:
+                    new_folds[s - abs_d] = e - abs_d
+                elif s >= from_line:
+                    # fold 시작이 삭제 범위 안 → 제거
+                    continue
+                elif e < del_end:
+                    # fold 끝이 삭제 범위 안 → 축소
+                    if from_line - 1 > s:
+                        new_folds[s] = from_line - 1
+                else:
+                    # fold가 삭제 범위를 포함 → 크기만 축소
+                    new_folds[s] = e - abs_d
+            self._folds = new_folds
+            self._collapsed_strings = {
+                (i - abs_d if i >= del_end else i)
+                for i in self._collapsed_strings
+                if not (from_line <= i < del_end)
+            }
 
     # -- Folding -----------------------------------------------------------
 
@@ -2664,13 +2717,17 @@ class JsonEditor(Widget, can_focus=True):
         # d 또는 c: 삭제
         self._save_undo()
         self.yank_buffer = selected[:]
+        deleted_count = er - sr + 1
         if er < len(self.lines) - 1 or sr > 0:
             self.lines[sr : er + 1] = []
+            self._adjust_line_indices(sr, -deleted_count)
             if not self.lines:
                 self.lines = [""]
         else:
             # 전체 파일 선택 시
             self.lines[sr : er + 1] = [""]
+            self._folds.clear()
+            self._collapsed_strings.clear()
         self.cursor_row = min(sr, len(self.lines) - 1)
         self.cursor_col = 0
         if op == "c":
@@ -2679,7 +2736,12 @@ class JsonEditor(Widget, can_focus=True):
                 if selected[0].strip()
                 else 0
             )
-            self.lines.insert(self.cursor_row, " " * indent)
+            # 전체 파일 선택 시 이미 빈 줄이 남아있으므로 내용만 교체
+            if len(self.lines) == 1 and self.lines[0] == "":
+                self.lines[0] = " " * indent
+            else:
+                self.lines.insert(self.cursor_row, " " * indent)
+                self._adjust_line_indices(self.cursor_row, 1)
             self.cursor_col = indent
             self._enter_insert()
         else:
@@ -2714,7 +2776,9 @@ class JsonEditor(Widget, can_focus=True):
             before = self.lines[sr][:sc]
             after = self.lines[er][ec + 1 :]
             self.lines[sr] = before + after
+            deleted_count = er - sr
             del self.lines[sr + 1 : er + 1]
+            self._adjust_line_indices(sr + 1, -deleted_count)
         self.cursor_row = sr
         self.cursor_col = sc
         if op == "c":
@@ -2758,11 +2822,15 @@ class JsonEditor(Widget, can_focus=True):
                         self.lines.insert(self.cursor_row + i, p + after)
                     else:
                         self.lines.insert(self.cursor_row + i, p)
-                self.cursor_row += len(parts) - 1
+                inserted = len(parts) - 1
+                self._adjust_line_indices(self.cursor_row + 1, inserted)
+                self.cursor_row += inserted
                 self.cursor_col = len(parts[-1]) - 1
             return
+        inserted = len(self.yank_buffer)
         for i, line in enumerate(self.yank_buffer):
             self.lines.insert(self.cursor_row + 1 + i, line)
+        self._adjust_line_indices(self.cursor_row + 1, inserted)
         self.cursor_row += 1
         self.cursor_col = 0
 
@@ -2788,11 +2856,15 @@ class JsonEditor(Widget, can_focus=True):
                         self.lines.insert(self.cursor_row + i, p + after)
                     else:
                         self.lines.insert(self.cursor_row + i, p)
-                self.cursor_row += len(parts) - 1
+                inserted = len(parts) - 1
+                self._adjust_line_indices(self.cursor_row + 1, inserted)
+                self.cursor_row += inserted
                 self.cursor_col = len(parts[-1]) - 1
             return
+        inserted = len(self.yank_buffer)
         for i, line in enumerate(self.yank_buffer):
             self.lines.insert(self.cursor_row + i, line)
+        self._adjust_line_indices(self.cursor_row, inserted)
         self.cursor_col = 0
 
     def _join_lines(self) -> None:
@@ -2803,7 +2875,9 @@ class JsonEditor(Widget, can_focus=True):
         nxt = self.lines[self.cursor_row + 1].lstrip()
         self.cursor_col = len(cur)
         self.lines[self.cursor_row] = cur + " " + nxt
-        self.lines.pop(self.cursor_row + 1)
+        deleted_at = self.cursor_row + 1
+        self.lines.pop(deleted_at)
+        self._adjust_line_indices(deleted_at, -1)
 
     def _undo(self) -> None:
         if not self.undo_stack:
