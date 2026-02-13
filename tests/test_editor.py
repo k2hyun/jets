@@ -1502,3 +1502,313 @@ class TestVisualMode:
         editor._handle_normal(self._key("v"))
         editor._handle_normal(self._key("?"))
         assert editor._visual_mode == ""
+
+
+class TestSubstitute:
+    """Tests for substitute command (:s/old/new/flags)."""
+
+    def test_current_line_first_match(self):
+        """`:s/old/new/` — 현재 라인, 첫 번째 매치만 치환."""
+        editor = JsonEditor('"old old old"')
+        editor.cursor_row = 0
+        editor._exec_command("s/old/new/")
+        assert editor.lines == ['"new old old"']
+        assert "1 substitution" in editor.status_msg
+
+    def test_current_line_global(self):
+        """`:s/old/new/g` — 현재 라인, 모든 매치 치환."""
+        editor = JsonEditor('"old old old"')
+        editor.cursor_row = 0
+        editor._exec_command("s/old/new/g")
+        assert editor.lines == ['"new new new"']
+        assert "3 substitution" in editor.status_msg
+
+    def test_whole_file(self):
+        """`:%s/old/new/g` — 전체 파일 치환."""
+        content = '"old"\n"old"\n"old"'
+        editor = JsonEditor(content)
+        editor._exec_command("%s/old/new/g")
+        assert editor.lines == ['"new"', '"new"', '"new"']
+
+    def test_line_range(self):
+        """`：2,4s/old/new/g` — 라인 범위 치환."""
+        content = "old\nold\nold\nold\nold"
+        editor = JsonEditor(content)
+        editor._exec_command("2,4s/old/new/g")
+        assert editor.lines == ["old", "new", "new", "new", "old"]
+
+    def test_ignore_case(self):
+        """`:s/old/new/gi` — 대소문자 무시."""
+        editor = JsonEditor('"OLD Old old"')
+        editor.cursor_row = 0
+        editor._exec_command("s/old/new/gi")
+        assert editor.lines == ['"new new new"']
+
+    def test_regex_group(self):
+        """`:s/(\\w+)/[\\1]/g` — 정규식 그룹 캡처."""
+        editor = JsonEditor("hello world")
+        editor.cursor_row = 0
+        editor._exec_command("s/(\\w+)/[\\1]/g")
+        assert editor.lines == ["[hello] [world]"]
+
+    def test_custom_delimiter(self):
+        """`:s#old#new#g` — 커스텀 구분자."""
+        editor = JsonEditor('"old old"')
+        editor.cursor_row = 0
+        editor._exec_command("s#old#new#g")
+        assert editor.lines == ['"new new"']
+
+    def test_escaped_delimiter(self):
+        """`:s/a\\/b/c\\/d/` — escaped 구분자."""
+        editor = JsonEditor('"a/b"')
+        editor.cursor_row = 0
+        editor._exec_command("s/a\\/b/c\\/d/")
+        assert editor.lines == ['"c/d"']
+
+    def test_pattern_not_found(self):
+        """패턴 미발견 시 메시지."""
+        editor = JsonEditor('"hello"')
+        editor.cursor_row = 0
+        editor._exec_command("s/xyz/abc/")
+        assert "Pattern not found" in editor.status_msg
+        assert editor.lines == ['"hello"']
+
+    def test_readonly_blocked(self):
+        """readonly 모드에서 치환 차단."""
+        editor = JsonEditor('"old"')
+        editor.read_only = True
+        editor._exec_command("s/old/new/")
+        assert editor.status_msg == "[readonly]"
+        assert editor.lines == ['"old"']
+
+    def test_undo_after_substitute(self):
+        """치환 후 undo 동작 확인."""
+        editor = JsonEditor('"old old"')
+        editor.cursor_row = 0
+        editor._exec_command("s/old/new/g")
+        assert editor.lines == ['"new new"']
+        editor._undo()
+        assert editor.lines == ['"old old"']
+
+    def test_no_undo_entry_when_no_match(self):
+        """매치 없을 때 undo 스택에 항목 추가되지 않음."""
+        editor = JsonEditor('"hello"')
+        initial_undo_len = len(editor.undo_stack)
+        editor._exec_command("s/xyz/abc/")
+        assert len(editor.undo_stack) == initial_undo_len
+
+    def test_pipe_delimiter(self):
+        """`:s|old|new|g` — 파이프 구분자."""
+        editor = JsonEditor('"old"')
+        editor.cursor_row = 0
+        editor._exec_command("s|old|new|g")
+        assert editor.lines == ['"new"']
+
+    def test_empty_replacement(self):
+        """`:s/old//g` — 빈 문자열로 치환 (삭제)."""
+        editor = JsonEditor('"old text old"')
+        editor.cursor_row = 0
+        editor._exec_command("s/old//g")
+        assert editor.lines == ['" text "']
+
+    def test_current_line_respects_cursor_row(self):
+        """범위 없이 현재 커서 라인만 치환."""
+        content = "aaa\nbbb\naaa"
+        editor = JsonEditor(content)
+        editor.cursor_row = 2
+        editor._exec_command("s/aaa/ccc/")
+        assert editor.lines == ["aaa", "bbb", "ccc"]
+
+
+class TestSubstituteJsonPath:
+    """Tests for JSONPath substitute.
+
+    문법 구분:
+    - $.path      → 키 이름 변경
+    - $.path=     → 전체 값 치환
+    - $.path=val  → 조건부 값 치환
+    """
+
+    # -- 값 치환 ($.path=) --
+
+    def test_value_basic_string(self):
+        """$.name= 로 문자열 값 치환."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.name=/Bob/g")
+        assert '"Bob"' in editor.lines[1]
+        assert "1 substitution" in editor.status_msg
+
+    def test_value_number(self):
+        """$.age= 로 숫자 값 치환 — 자동 감지."""
+        content = '{\n    "age": 30\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.age=/25/g")
+        assert "25" in editor.lines[1]
+        assert '"25"' not in editor.lines[1]
+
+    def test_value_boolean(self):
+        """$.active= 로 불리언 값 치환."""
+        content = '{\n    "active": false\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.active=/true/g")
+        assert "true" in editor.lines[1]
+
+    def test_value_null(self):
+        """$.data= 로 null 치환."""
+        content = '{\n    "data": "old"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.data=/null/g")
+        assert "null" in editor.lines[1]
+
+    def test_value_wildcard(self):
+        """와일드카드로 여러 값 치환."""
+        content = (
+            '{\n    "users": [\n        {"name": "A"},\n        {"name": "B"}\n    ]\n}'
+        )
+        editor = JsonEditor(content)
+        editor._exec_command("s/$..name=/X/g")
+        result = editor.get_content()
+        assert result.count('"X"') == 2
+
+    def test_value_global_flag(self):
+        """g 플래그 없으면 첫 번째만 치환."""
+        content = (
+            '{\n    "users": [\n        {"name": "A"},\n        {"name": "B"}\n    ]\n}'
+        )
+        editor = JsonEditor(content)
+        editor._exec_command("s/$..name=/X/")
+        result = editor.get_content()
+        assert result.count('"X"') == 1
+
+    def test_value_filter_equals(self):
+        """필터로 특정 값만 치환."""
+        content = '{\n    "items": [\n        {"status": "draft"},\n        {"status": "published"}\n    ]\n}'
+        editor = JsonEditor(content)
+        editor._exec_command('s/$..status="draft"/review/g')
+        result = editor.get_content()
+        assert '"review"' in result
+        assert '"published"' in result
+
+    def test_value_not_found(self):
+        """JSONPath 매치 없을 때 메시지."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.nonexistent=/value/g")
+        assert "not found" in editor.status_msg.lower()
+
+    def test_value_object_not_substitutable(self):
+        """오브젝트/배열은 값 치환 불가."""
+        content = '{\n    "data": {"nested": true}\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.data=/replaced/g")
+        assert "not substitutable" in editor.status_msg.lower()
+
+    def test_value_undo(self):
+        """값 치환 후 undo 동작."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.name=/Bob/g")
+        assert '"Bob"' in editor.lines[1]
+        editor._undo()
+        assert '"Alice"' in editor.lines[1]
+
+    def test_value_quoted_string(self):
+        """이미 따옴표가 있는 replacement는 그대로 사용."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command('s/$.name=/"Bob"/g')
+        assert '"Bob"' in editor.lines[1]
+
+    def test_value_custom_delimiter(self):
+        """커스텀 구분자로 값 치환."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s#$.name=#Bob#g")
+        assert '"Bob"' in editor.lines[1]
+
+    # -- 키 이름 변경 ($.path) --
+
+    def test_key_rename_basic(self):
+        """$.name 으로 키 이름 변경."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.name/username/g")
+        assert '"username"' in editor.lines[1]
+        assert '"Alice"' in editor.lines[1]
+        assert "1 substitution" in editor.status_msg
+
+    def test_key_rename_wildcard(self):
+        """와일드카드로 여러 키 이름 변경."""
+        content = (
+            '{\n    "users": [\n        {"name": "A"},\n        {"name": "B"}\n    ]\n}'
+        )
+        editor = JsonEditor(content)
+        editor._exec_command("s/$..name/label/g")
+        result = editor.get_content()
+        assert result.count('"label"') == 2
+        assert '"A"' in result
+        assert '"B"' in result
+
+    def test_key_rename_no_global(self):
+        """g 플래그 없으면 첫 번째 키만 변경."""
+        content = (
+            '{\n    "users": [\n        {"name": "A"},\n        {"name": "B"}\n    ]\n}'
+        )
+        editor = JsonEditor(content)
+        editor._exec_command("s/$..name/label/")
+        result = editor.get_content()
+        assert result.count('"label"') == 1
+
+    def test_key_rename_undo(self):
+        """키 이름 변경 후 undo."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.name/username/g")
+        assert '"username"' in editor.lines[1]
+        editor._undo()
+        assert '"name"' in editor.lines[1]
+
+    def test_key_rename_not_found(self):
+        """존재하지 않는 키."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.nonexistent/newkey/g")
+        assert "not found" in editor.status_msg.lower()
+
+    def test_key_rename_array_index_skipped(self):
+        """배열 인덱스는 키 변경 불가."""
+        content = '{\n    "items": [1, 2, 3]\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("s/$.items[0]/newkey/g")
+        assert "no renamable keys" in editor.status_msg.lower()
+
+    # -- 공통 --
+
+    def test_readonly_blocked(self):
+        """readonly 모드에서 JSONPath 치환 차단."""
+        content = '{\n    "name": "Alice"\n}'
+        editor = JsonEditor(content)
+        editor.read_only = True
+        editor._exec_command("s/$.name/Bob/g")
+        assert editor.status_msg == "[readonly]"
+        assert '"Alice"' in editor.lines[1]
+
+    def test_json_encode_replacement_number(self):
+        """_json_encode_replacement: 숫자."""
+        assert JsonEditor._json_encode_replacement("42") == "42"
+        assert JsonEditor._json_encode_replacement("3.14") == "3.14"
+
+    def test_json_encode_replacement_bool_null(self):
+        """_json_encode_replacement: 불리언/null."""
+        assert JsonEditor._json_encode_replacement("true") == "true"
+        assert JsonEditor._json_encode_replacement("false") == "false"
+        assert JsonEditor._json_encode_replacement("null") == "null"
+
+    def test_json_encode_replacement_string(self):
+        """_json_encode_replacement: 일반 문자열은 JSON 인코딩."""
+        assert JsonEditor._json_encode_replacement("hello") == '"hello"'
+
+    def test_json_encode_replacement_already_quoted(self):
+        """_json_encode_replacement: 이미 따옴표면 그대로."""
+        assert JsonEditor._json_encode_replacement('"hello"') == '"hello"'

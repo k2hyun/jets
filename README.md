@@ -24,6 +24,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **Folding** - Collapse/expand JSON blocks and long string values
 - **Bracket matching** - Jump to matching brackets with `%`
 - **Undo/Redo** - Full undo history
+- **Substitute** - Vim-style `:s/old/new/g` with regex, range, and flags support
 
 ## Installation
 
@@ -165,6 +166,63 @@ Using `ej` on the config line opens:
 ```
 
 After editing and saving, the parent is updated with the minified result.
+
+## Substitute
+
+jvim supports vim-style substitute commands for find-and-replace.
+
+| Command | Description |
+|---------|-------------|
+| `:s/old/new/` | Replace first match on current line |
+| `:s/old/new/g` | Replace all matches on current line |
+| `:%s/old/new/g` | Replace all matches in entire file |
+| `:N,Ms/old/new/g` | Replace all matches in lines N to M |
+
+### Features
+
+- **Custom delimiters** - Use any character as delimiter: `:s#old#new#g`, `:s|old|new|g`
+- **Flags** - `g` (global/all matches), `i` (case insensitive)
+- **Regex support** - Full regular expressions with group capture (`\1`, `\2`)
+- **Undo** - All substitutions can be undone with `u`
+
+### Examples
+
+```
+:s/foo/bar/           # Replace first "foo" with "bar" on current line
+:%s/TODO/DONE/g       # Replace all "TODO" with "DONE" in file
+:s/(\w+)/[\1]/g       # Wrap each word in brackets
+:%s/old/new/gi        # Case-insensitive replace in entire file
+:2,10s/from/to/g      # Replace in lines 2 through 10
+```
+
+### JSONPath Substitute
+
+When the find pattern starts with `$.` or `$[`, substitute operates on JSON structure. The trailing `=` determines the mode:
+
+| Pattern | Mode | Description |
+|---------|------|-------------|
+| `:s/$.key/newkey/g` | Key rename | Rename JSON keys |
+| `:s/$.key=/value/g` | Value replace | Replace all values at path |
+| `:s/$.key="old"/new/g` | Filtered value | Replace values matching filter |
+
+#### Key rename
+
+```
+:s/$.name/username/g             # Rename "name" key to "username"
+:s/$..name/label/g               # Rename all "name" keys recursively
+```
+
+#### Value replace
+
+```
+:s/$.name=/Bob/g                 # Replace "name" value with "Bob"
+:s/$..status=/active/g           # Replace all "status" values recursively
+:s/$.users[*].age=/0/g          # Reset all user ages to 0
+:s/$..enabled=/true/g            # Set all "enabled" to true
+:s/$..status="draft"/review/g   # Replace only "draft" statuses (filter)
+```
+
+Replacement values are auto-detected: numbers (`42`), booleans (`true`/`false`), `null` stay as-is; everything else is JSON-encoded as a string.
 
 ## Keybindings
 

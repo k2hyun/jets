@@ -1356,6 +1356,12 @@ class JsonEditor(Widget, can_focus=True):
             self._scroll_cursor_to_top()
             return
 
+        # 치환 명령: :s/old/new/g, :%s/old/new/g, :N,Ms/old/new/g
+        sub_match = re.match(r"^(%|(\d+),(\d+))?s(.)(.*)$", stripped)
+        if sub_match:
+            self._execute_substitute(stripped)
+            return
+
         parts = cmd.split(None, 1)
         verb = parts[0] if parts else ""
         arg = parts[1] if len(parts) > 1 else ""
@@ -1410,6 +1416,340 @@ class JsonEditor(Widget, can_focus=True):
             self.post_message(self.HelpToggleRequested())
         else:
             self.status_msg = f"unknown command: :{cmd}"
+
+    # -- SUBSTITUTE --------------------------------------------------------
+
+    def _execute_substitute(self, cmd: str) -> None:
+        """치환 명령 실행: s/old/new/flags, %s/old/new/flags, N,Ms/old/new/flags"""
+        if self.read_only:
+            self.status_msg = "[readonly]"
+            return
+
+        # 범위 파싱
+        range_match = re.match(r"^(%|(\d+),(\d+))?s(.)(.*)$", cmd)
+        if not range_match:
+            self.status_msg = "invalid substitute command"
+            return
+
+        range_spec = range_match.group(1)
+        range_start_s = range_match.group(2)
+        range_end_s = range_match.group(3)
+        delim = range_match.group(4)
+        rest = range_match.group(5)
+
+        # 구분자로 pattern/replacement/flags 분리 (escaped 구분자 처리)
+        parts: list[str] = []
+        current: list[str] = []
+        i = 0
+        while i < len(rest):
+            if rest[i] == "\\" and i + 1 < len(rest) and rest[i + 1] == delim:
+                current.append(delim)
+                i += 2
+            elif rest[i] == delim:
+                parts.append("".join(current))
+                current = []
+                i += 1
+            else:
+                current.append(rest[i])
+                i += 1
+        parts.append("".join(current))
+
+        if len(parts) < 2:
+            self.status_msg = "invalid substitute command"
+            return
+
+        pattern = parts[0]
+        replacement = parts[1]
+        flags_str = parts[2] if len(parts) > 2 else ""
+
+        if not pattern:
+            self.status_msg = "empty pattern"
+            return
+
+        # JSONPath 패턴 감지: $. 또는 $[ 로 시작
+        if pattern.startswith("$.") or pattern.startswith("$["):
+            self._execute_substitute_jsonpath(pattern, replacement, flags_str)
+            return
+
+        # 플래그 파싱
+        global_flag = "g" in flags_str
+        re_flags = 0
+        if "i" in flags_str:
+            re_flags |= re.IGNORECASE
+
+        try:
+            regex = re.compile(pattern, re_flags)
+        except re.error as e:
+            self.status_msg = f"invalid regex: {e}"
+            return
+
+        # 범위 결정
+        if range_spec == "%":
+            start, end = 0, len(self.lines) - 1
+        elif range_start_s and range_end_s:
+            start = max(0, int(range_start_s) - 1)
+            end = min(len(self.lines) - 1, int(range_end_s) - 1)
+        else:
+            start = end = self.cursor_row
+
+        if start > end:
+            self.status_msg = "invalid range"
+            return
+
+        self._save_undo()
+
+        total_count = 0
+        for row in range(start, end + 1):
+            line = self.lines[row]
+            if global_flag:
+                new_line, count = regex.subn(replacement, line)
+            else:
+                new_line, count = regex.subn(replacement, line, count=1)
+            if count > 0:
+                self.lines[row] = new_line
+                total_count += count
+
+        if total_count == 0:
+            # 매치 없으면 undo 스택 복원
+            self.undo_stack.pop()
+            self.status_msg = f"Pattern not found: {pattern}"
+        else:
+            self.status_msg = f"{total_count} substitution(s)"
+            self._invalidate_caches()
+
+    @staticmethod
+    def _json_encode_replacement(value: str) -> str:
+        """replacement 값을 JSON 값으로 자동 변환.
+
+        숫자, 불리언, null은 그대로, 나머지는 JSON 문자열로 인코딩.
+        """
+        if value in ("true", "false", "null"):
+            return value
+        try:
+            float(value)
+            return value
+        except ValueError:
+            pass
+        # 이미 JSON 문자열 형태면 그대로 사용
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    def _execute_substitute_jsonpath(
+        self, pattern: str, replacement: str, flags_str: str
+    ) -> None:
+        """JSONPath 패턴으로 JSON 키 또는 값을 치환.
+
+        모드 구분:
+        - $.path      (op 없음) → 키 이름 변경
+        - $.path=     (op="=", 값 없음) → 전체 값 치환
+        - $.path=val  (op+값) → 조건부 값 치환
+        """
+        global_flag = "g" in flags_str
+
+        jsonpath, op, filter_value = self._parse_jsonpath_filter(pattern)
+
+        # 모드 결정
+        key_rename = not op
+        # op="=" + filter_value=None → trailing "=" → 전체 값 치환 (필터 없음)
+        unconditional_value = op == "=" and filter_value is None
+
+        # JSON 파싱
+        content = self.get_content()
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            self.status_msg = f"Invalid JSON: {e.msg} (line {e.lineno})"
+            return
+
+        # JSONL은 별도 처리
+        if self.jsonl:
+            self._execute_substitute_jsonpath_jsonl(
+                jsonpath,
+                op,
+                filter_value,
+                replacement,
+                global_flag,
+                key_rename,
+                unconditional_value,
+            )
+            return
+
+        # JSONPath 매치 찾기
+        try:
+            results = self._jsonpath_find(data, jsonpath)
+        except ValueError as e:
+            self.status_msg = f"Invalid JSONPath: {e}"
+            return
+
+        # 조건부 필터 (op+값이 있고 unconditional이 아닌 경우)
+        if op and not unconditional_value:
+            results = [
+                p
+                for p in results
+                if self._jsonpath_value_matches(
+                    self._get_value_at_path(data, p), op, filter_value
+                )
+            ]
+
+        if not results:
+            self.status_msg = f"JSONPath not found: {pattern}"
+            return
+
+        if key_rename:
+            # 키 이름 변경 모드: 마지막 경로가 문자열 키인 것만
+            key_results = [p for p in results if p and isinstance(p[-1], str)]
+            if not key_results:
+                self.status_msg = "No renamable keys found"
+                return
+            if not global_flag:
+                key_results = key_results[:1]
+
+            key_index = self._build_key_index()
+            positions: list[tuple[int, int, int]] = []
+            used: set[tuple[int, int]] = set()
+            for json_path in key_results:
+                pos = self._find_json_value_position_fast(
+                    data, json_path, key_index, return_key=True
+                )
+                while pos and (pos[0], pos[1]) in used:
+                    pos = self._find_json_value_position_fast(
+                        data, json_path, key_index, pos[0], pos[1] + 1, return_key=True
+                    )
+                if pos:
+                    used.add((pos[0], pos[1]))
+                    positions.append(pos)
+
+            if not positions:
+                self.status_msg = "JSONPath matched but key positions not found"
+                return
+
+            encoded = json.dumps(replacement, ensure_ascii=False)
+        else:
+            # 값 치환 모드: leaf 값만
+            leaf_results = [
+                p
+                for p in results
+                if not isinstance(self._get_value_at_path(data, p), (dict, list))
+            ]
+            if not leaf_results:
+                self.status_msg = (
+                    "JSONPath matches only objects/arrays (not substitutable)"
+                )
+                return
+            if not global_flag:
+                leaf_results = leaf_results[:1]
+
+            key_index = self._build_key_index()
+            positions = []
+            used = set()
+            for json_path in leaf_results:
+                pos = self._find_json_value_position_fast(data, json_path, key_index)
+                while pos and (pos[0], pos[1]) in used:
+                    pos = self._find_json_value_position_fast(
+                        data, json_path, key_index, pos[0], pos[1] + 1
+                    )
+                if pos:
+                    used.add((pos[0], pos[1]))
+                    positions.append(pos)
+
+            if not positions:
+                self.status_msg = "JSONPath matched but positions not found"
+                return
+
+            encoded = self._json_encode_replacement(replacement)
+
+        self._save_undo()
+
+        # 뒤에서부터 치환 (위치 시프트 방지)
+        positions.sort(key=lambda p: (p[0], p[1]), reverse=True)
+        for row, col_start, col_end in positions:
+            line = self.lines[row]
+            self.lines[row] = line[:col_start] + encoded + line[col_end:]
+
+        self.status_msg = f"{len(positions)} substitution(s)"
+        self._invalidate_caches()
+
+    def _execute_substitute_jsonpath_jsonl(
+        self,
+        jsonpath: str,
+        op: str,
+        filter_value: any,
+        replacement: str,
+        global_flag: bool,
+        key_rename: bool = False,
+        unconditional_value: bool = False,
+    ) -> None:
+        """JSONL 모드에서 JSONPath 치환."""
+        blocks = self._split_jsonl_blocks(self.get_content())
+        if not blocks:
+            self.status_msg = "No JSONL records found"
+            return
+
+        block_start_lines = self._compute_block_start_lines()
+
+        all_results: list[tuple[int, any, list[str | int]]] = []
+        for block_idx, block in enumerate(blocks):
+            try:
+                data = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            try:
+                results = self._jsonpath_find(data, jsonpath)
+                for json_path in results:
+                    # 조건부 필터
+                    if op and not unconditional_value:
+                        actual = self._get_value_at_path(data, json_path)
+                        if not self._jsonpath_value_matches(actual, op, filter_value):
+                            continue
+                    if key_rename:
+                        if json_path and isinstance(json_path[-1], str):
+                            all_results.append((block_idx, data, json_path))
+                    else:
+                        val = self._get_value_at_path(data, json_path)
+                        if not isinstance(val, (dict, list)):
+                            all_results.append((block_idx, data, json_path))
+            except ValueError as e:
+                if block_idx == 0:
+                    self.status_msg = f"Invalid JSONPath: {e}"
+                    return
+
+        if not all_results:
+            self.status_msg = f"JSONPath not found: {jsonpath}"
+            return
+
+        if not global_flag:
+            all_results = all_results[:1]
+
+        key_index = self._build_key_index()
+        positions: list[tuple[int, int, int]] = []
+        for block_idx, data, json_path in all_results:
+            start_line = block_start_lines.get(block_idx, 0)
+            pos = self._find_json_value_position_fast(
+                data, json_path, key_index, start_line, return_key=key_rename
+            )
+            if pos:
+                positions.append(pos)
+
+        if not positions:
+            self.status_msg = "JSONPath matched but positions not found"
+            return
+
+        encoded = (
+            json.dumps(replacement, ensure_ascii=False)
+            if key_rename
+            else self._json_encode_replacement(replacement)
+        )
+
+        self._save_undo()
+
+        positions.sort(key=lambda p: (p[0], p[1]), reverse=True)
+        for row, col_start, col_end in positions:
+            line = self.lines[row]
+            self.lines[row] = line[:col_start] + encoded + line[col_end:]
+
+        self.status_msg = f"{len(positions)} substitution(s)"
+        self._invalidate_caches()
 
     # -- SEARCH ------------------------------------------------------------
 
@@ -1830,8 +2170,13 @@ class JsonEditor(Widget, can_focus=True):
         path: list[str | int],
         key_index: dict[str, list[tuple[int, int]]],
         start_line: int = 0,
+        min_col: int = 0,
+        return_key: bool = False,
     ) -> tuple[int, int, int] | None:
-        """Find text position using pre-built key index."""
+        """Find text position using pre-built key index.
+
+        return_key=True이면 값 대신 키 위치를 반환.
+        """
         # Navigate to find the value
         current = data
         for key in path:
@@ -1856,9 +2201,11 @@ class JsonEditor(Widget, can_focus=True):
                 key_pattern = json.dumps(last_key, ensure_ascii=False)
                 positions = key_index.get(key_pattern, [])
 
-                # Find the first position at or after start_line
+                # Find the first position at or after start_line (and min_col)
                 for row, col in positions:
-                    if row >= start_line:
+                    if row > start_line or (row == start_line and col >= min_col):
+                        if return_key:
+                            return (row, col, col + len(key_pattern))
                         if is_complex:
                             # Highlight the key
                             return (row, col, col + len(key_pattern))
@@ -1886,7 +2233,8 @@ class JsonEditor(Widget, can_focus=True):
                 target_str = json.dumps(current, ensure_ascii=False)
                 for row in range(start_line, len(self.lines)):
                     line = self.lines[row]
-                    pos = line.find(target_str)
+                    search_start = min_col if row == start_line else 0
+                    pos = line.find(target_str, search_start)
                     if pos >= 0:
                         return (row, pos, pos + len(target_str))
                 return None
